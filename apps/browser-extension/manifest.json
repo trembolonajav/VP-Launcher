@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "VP Client",
+  "version": "0.10.0",
+  "description": "Monitor local para o PokeWG.",
+  "permissions": ["activeTab", "downloads", "scripting"],
+  "host_permissions": ["https://pokewg.com/*", "https://test.pokewg.com/*", "http://127.0.0.1:8789/*"],
+  "action": { "default_title": "VP Client", "default_popup": "popup.html" },
+  "content_scripts": [{
+    "matches": ["https://pokewg.com/*", "https://test.pokewg.com/*"],
+    "js": ["content.js"],
+    "run_at": "document_idle"
+  }]
+}

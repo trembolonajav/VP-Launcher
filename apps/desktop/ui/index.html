@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VP Launcher</title>
+<link rel="icon" href="assets/favicon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;800&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; padding: 0; background: #0a0605; }
+  body { font-family: Inter, sans-serif; -webkit-font-smoothing: antialiased; color: #f7eee7; font-size: 13px; font-variant-numeric: tabular-nums; }
+  * { box-sizing: border-box; }
+  a { color: #e5b34f; text-decoration: none; }
+  a:hover { color: #f6d68f; }
+  button { font-family: inherit; }
+  ::selection { background: rgba(194,54,41,.45); }
+  ::-webkit-scrollbar { width: 9px; height: 9px }
+  ::-webkit-scrollbar-thumb { background: rgba(216,138,74,.22); border-radius: 9px }
+  ::-webkit-scrollbar-track { background: #0a0605 }
+  @keyframes vpPulse { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
+  #notice { display:none; margin:0; padding:11px 16px; background:#3a1714; border-bottom:1px solid rgba(216,80,60,.5); color:#ffcabf; font-size:12px; font-weight:600; }
+  .vp-row:hover { background: rgba(194,54,41,.07) !important; }
+  .vp-nav:hover { border-color: rgba(226,75,53,.3) !important; color:#f7eee7 !important; }
+  .vp-iconbtn:hover { border-color:#e5b34f !important; }
+  .vp-primary:hover { filter: brightness(1.13); }
+  .vp-ghost:hover { border-color:#e5b34f !important; color:#f6d68f !important; }
+  .vp-tile:hover { border-color: rgba(229,179,79,.5) !important; }
+  .vp-danger:hover { border-color: rgba(216,80,60,.8) !important; color:#ffc9ba !important; }
+  .vp-preset:hover { border-color:#e5b34f !important; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+</style>
+</head>
+<body>
+<div id="notice"></div>
+<div id="root"></div>
+<script src="/app.js"></script>
+</body>
+</html>

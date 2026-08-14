@@ -1,0 +1,21 @@
+{
+  "name": "vp-client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Diagnostico local de uma sessao do PokeWG",
+  "type": "module",
+  "scripts": {
+    "desktop": "electron apps/desktop/electron-main.js",
+    "launcher": "node apps/desktop/server.js",
+    "start": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/iniciar-launcher.ps1",
+    "start:test": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/iniciar-launcher.ps1 --test",
+    "legacy:playwright": "node legacy/playwright/index.js",
+    "check": "node --check apps/desktop/electron-main.js && node --check apps/desktop/server.js && node --check apps/desktop/ui/app.js && node --check legacy/playwright/index.js && node --check legacy/playwright/diagnostics.js"
+  },
+  "dependencies": {
+    "playwright-core": "1.62.1"
+  },
+  "devDependencies": {
+    "electron": "^43.4.0"
+  }
+}

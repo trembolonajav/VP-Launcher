@@ -1,0 +1,3 @@
+[submodule "vendor/pokewg-mapas"]
+	path = vendor/pokewg-mapas
+	url = https://github.com/rafaellgapolinario/pokewg-mapas.git

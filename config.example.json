@@ -1,0 +1,8 @@
+{
+  "gameUrl": "https://pokewg.com/play",
+  "profileName": "conta-01",
+  "ipCheckUrl": "https://api.ipify.org?format=json",
+  "expectedVpnIp": "",
+  "chromePath": "",
+  "snapshotIntervalSeconds": 15
+}

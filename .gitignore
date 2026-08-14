@@ -1,0 +1,32 @@
+# Dependencies and build outputs
+node_modules/
+dist/
+build/
+*.log
+npm-debug.log*
+prototypes/**/bin/
+prototypes/**/obj/
+
+# Local browser/session data
+profiles/
+launcher-profiles/
+webview2-profiles/
+apps/desktop/logs/
+
+# Credentials and machine-specific configuration
+.env
+config.json
+accounts.enc
+**/accounts.enc
+
+# Generated diagnostics and reports
+reports/
+diagnostico-*.json
+inventario-publico-*.json
+resultado-venda-*.json
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
