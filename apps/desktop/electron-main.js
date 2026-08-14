@@ -1,5 +1,4 @@
 import electron from "electron";
-import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,12 +6,11 @@ import { fileURLToPath } from "node:url";
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const { app, BrowserWindow, WebContentsView, ipcMain, safeStorage } = electron;
 const config = JSON.parse(fs.readFileSync(path.join(dir, "accounts.json"), "utf8"));
-const telemetryScript = fs.readFileSync(path.join(path.dirname(dir), "browser-extension", "content.js"), "utf8");
+const gameAgentScript = fs.readFileSync(path.join(dir, "game-agent", "index.js"), "utf8");
 const accounts = new Map(config.accounts.map(account => [account.id, account]));
 const views = new Map();
 const networks = new Map();
 const telemetry = new Map();
-let serverProcess;
 let mainWindow;
 let credentialsFile;
 
@@ -53,10 +51,6 @@ async function loginAccount(id) {
   return view.webContents.executeJavaScript(script).catch(error => ({ ok: false, error: error.message }));
 }
 
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-async function serverAlive() { try { return (await fetch("http://127.0.0.1:8789/api/status", { signal: AbortSignal.timeout(500) })).ok; } catch { return false; } }
-async function waitForServer() { for (let i = 0; i < 40; i++) { if (await serverAlive()) return; await sleep(150); } throw new Error("Servidor local não iniciou."); }
-
 async function inspectNetwork(id, view) {
   try {
     const response = await view.webContents.session.fetch("https://ipwho.is/");
@@ -69,28 +63,10 @@ async function inspectNetwork(id, view) {
   }
 }
 
-function parseGameText(text) {
-  const player = text.match(/\b([A-Z][A-Z0-9_]{2,})\s+LV\s*(\d+)\s+(.+?)\s+XP\s+(\d+)%/i);
-  const pokemon = text.match(/\b([A-Za-z][A-Za-z.' -]{1,30})\s+Lv\.?\s*(\d+)\s+HP\s+(\d+)\s*\/\s*(\d+)\s+XP\s+(\d+)%/i);
-  const values = [...text.matchAll(/\b(\d+)\s*\/\s*(\d+)\b/g)].map(match => ({ used: Number(match[1]), total: Number(match[2]) })).filter(value => value.total >= 100 && value.used <= value.total);
-  const capacity = values.find(value => value.total === 335) || values.at(-1) || null;
-  const collectionMatch = text.match(/Cole[cç][aã]o\s+(\d+)\s*\/\s*(\d+)/i);
-  const location = player?.[3]?.replace(/\s+/g, " ").trim() || null;
-  const inCity = /^(Cerulean|Viridian|Pewter|Saffron|Cassino|Mercado)$/i.test(location || "");
-  return {
-    player: player ? { name: player[1], level: Number(player[2]), locationLabel: location, xpPercent: Number(player[4]) } : null,
-    activePokemon: pokemon ? { name: pokemon[1].trim(), level: Number(pokemon[2]), hp: Number(pokemon[3]), maxHp: Number(pokemon[4]), xpPercent: Number(pokemon[5]) } : null,
-    capacity,
-    collection: collectionMatch ? { used: Number(collectionMatch[1]), total: Number(collectionMatch[2]) } : null,
-    activity: { location, inCity, hunting: Boolean(location && !inCity), disconnected: /desconect|reconect|offline|sess[aã]o expirada/i.test(text) }
-  };
-}
-
 async function collectTelemetry(id, view) {
   try {
-    const text = await view.webContents.executeJavaScript("document.body?.innerText || ''");
-    const parsed = parseGameText(text);
-    telemetry.set(id, { capturedAt: new Date().toISOString(), ready: Boolean(parsed.player), parsed });
+    const snapshot = await view.webContents.executeJavaScript("window.__vpAgent?.snapshot || null");
+    if (snapshot) telemetry.set(id, snapshot);
   } catch {}
 }
 
@@ -102,11 +78,17 @@ function createView(id) {
   view.setVisible(false);
   mainWindow.contentView.addChildView(view);
   views.set(id, view);
+  const gameSession = view.webContents.session;
+  gameSession.setPermissionCheckHandler(() => false);
+  gameSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+  view.webContents.on("will-navigate", (event, url) => {
+    if (!/^https:\/\/(?:[^/]+\.)?pokewg\.com\//i.test(url)) event.preventDefault();
+  });
   view.webContents.on("did-finish-load", async () => {
     if (!/^https:\/\/(?:test\.)?pokewg\.com\//i.test(view.webContents.getURL())) return;
     if (/\/play/i.test(view.webContents.getURL())) {
       await view.webContents.executeJavaScript(`localStorage.setItem("vpclient:account", ${JSON.stringify(id)});`).catch(() => {});
-      await view.webContents.executeJavaScript(telemetryScript).catch(() => {});
+      await view.webContents.executeJavaScript(gameAgentScript).catch(() => {});
     }
     const credential = readCredentials()[id];
     if (credential?.autoLogin !== false) setTimeout(() => void loginAccount(id), 700);
@@ -155,10 +137,7 @@ async function runGameAction(id, action, payload = {}) {
 
 function registerIpc() {
   ipcMain.handle("vp:accounts", async () => {
-    let backend = [];
-    try { backend = (await (await fetch("http://127.0.0.1:8789/api/status")).json()).accounts || []; } catch {}
-    const byId = new Map(backend.map(account => [account.id, account]));
-    return config.accounts.map(account => ({ ...account, ...byId.get(account.id), running: views.has(account.id), url: views.get(account.id)?.webContents.getURL() || null, telemetry: telemetry.get(account.id) || byId.get(account.id)?.telemetry || null, network: networks.get(account.id) || null }));
+    return config.accounts.map(account => ({ ...account, running: views.has(account.id), url: views.get(account.id)?.webContents.getURL() || null, telemetry: telemetry.get(account.id) || null, network: networks.get(account.id) || null }));
   });
   ipcMain.handle("vp:open-embedded", (_event, id) => { try { createView(id); return { ok: true }; } catch (error) { return { ok: false, error: error.message }; } });
   ipcMain.handle("vp:layout-embedded", (_event, layouts = []) => {
@@ -195,14 +174,14 @@ function registerIpc() {
 
 app.whenReady().then(async () => {
   credentialsFile = path.join(app.getPath("userData"), "accounts.enc");
-  if (!await serverAlive()) serverProcess = spawn("node.exe", [path.join(dir, "server.js")], { cwd: path.dirname(dir), env: { ...process.env, VP_NO_OPEN: "1", VP_NATIVE: "1" }, stdio: "ignore", windowsHide: true });
-  await waitForServer();
   mainWindow = new BrowserWindow({ width: 1500, height: 920, minWidth: 1100, minHeight: 700, backgroundColor: "#0a0605", title: "VP Launcher", webPreferences: { preload: path.join(dir, "electron-preload.cjs"), contextIsolation: true, sandbox: true, backgroundThrottling: false } });
   mainWindow.setMenuBarVisibility(false);
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  mainWindow.webContents.on("will-navigate", (event, url) => { if (!url.startsWith("file://")) event.preventDefault(); });
   registerIpc();
   setInterval(() => { for (const [id, view] of views) void inspectNetwork(id, view); }, 60000).unref();
   setInterval(() => { for (const [id, view] of views) void collectTelemetry(id, view); }, 2000).unref();
-  await mainWindow.loadURL("http://127.0.0.1:8789");
+  await mainWindow.loadFile(path.join(dir, "ui", "index.html"));
 });
 
-app.on("window-all-closed", () => { for (const id of [...views.keys()]) closeView(id); if (serverProcess && !serverProcess.killed) serverProcess.kill(); app.quit(); });
+app.on("window-all-closed", () => { for (const id of [...views.keys()]) closeView(id); app.quit(); });

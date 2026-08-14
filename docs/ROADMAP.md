@@ -7,6 +7,9 @@
 - cadastro criptografado de credenciais;
 - telemetria básica e IP por sessão;
 - troca manual de mapa.
+- remoção do servidor localhost/Chrome/CDP do fluxo principal;
+- Game Agent com observação de mudanças;
+- bloqueio de navegação e permissões remotas por padrão.
 
 ## Próximas etapas
 

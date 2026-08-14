@@ -6,11 +6,12 @@
   "type": "module",
   "scripts": {
     "desktop": "electron apps/desktop/electron-main.js",
-    "launcher": "node apps/desktop/server.js",
     "start": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/iniciar-launcher.ps1",
     "start:test": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/iniciar-launcher.ps1 --test",
     "legacy:playwright": "node legacy/playwright/index.js",
-    "check": "node --check apps/desktop/electron-main.js && node --check apps/desktop/server.js && node --check apps/desktop/ui/app.js && node --check legacy/playwright/index.js && node --check legacy/playwright/diagnostics.js"
+    "legacy:server": "node legacy/old-launcher/server.js",
+    "check": "node --check apps/desktop/electron-main.js && node --check apps/desktop/game-agent/index.js && node --check apps/desktop/ui/app.js && node --check legacy/playwright/index.js && node --check legacy/playwright/diagnostics.js",
+    "test": "node --test tests/*.test.js"
   },
   "dependencies": {
     "playwright-core": "1.62.1"

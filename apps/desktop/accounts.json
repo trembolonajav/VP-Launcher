@@ -1,15 +1,15 @@
 {
   "gameUrl": "https://pokewg.com/play",
   "accounts": [
-    { "id": "conta-01", "name": "Conta 01", "enabled": true, "cdpPort": 9301 },
-    { "id": "conta-02", "name": "Conta 02", "enabled": true, "cdpPort": 9302 },
-    { "id": "conta-03", "name": "Conta 03", "enabled": true, "cdpPort": 9303 },
-    { "id": "conta-04", "name": "Conta 04", "enabled": true, "cdpPort": 9304 },
-    { "id": "conta-05", "name": "Conta 05", "enabled": true, "cdpPort": 9305 },
-    { "id": "conta-06", "name": "Conta 06", "enabled": true, "cdpPort": 9306 },
-    { "id": "conta-07", "name": "Conta 07", "enabled": true, "cdpPort": 9307 },
-    { "id": "conta-08", "name": "Conta 08", "enabled": true, "cdpPort": 9308 },
-    { "id": "conta-09", "name": "Conta 09", "enabled": true, "cdpPort": 9309 },
-    { "id": "conta-10", "name": "Conta 10", "enabled": true, "cdpPort": 9310 }
+    { "id": "conta-01", "name": "Conta 01", "enabled": true },
+    { "id": "conta-02", "name": "Conta 02", "enabled": true },
+    { "id": "conta-03", "name": "Conta 03", "enabled": true },
+    { "id": "conta-04", "name": "Conta 04", "enabled": true },
+    { "id": "conta-05", "name": "Conta 05", "enabled": true },
+    { "id": "conta-06", "name": "Conta 06", "enabled": true },
+    { "id": "conta-07", "name": "Conta 07", "enabled": true },
+    { "id": "conta-08", "name": "Conta 08", "enabled": true },
+    { "id": "conta-09", "name": "Conta 09", "enabled": true },
+    { "id": "conta-10", "name": "Conta 10", "enabled": true }
   ]
 }

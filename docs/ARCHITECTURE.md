@@ -10,9 +10,13 @@ O processo principal controla sessões, posicionamento dos navegadores, credenci
 
 `apps/desktop/ui/` contém somente a interface. Operações privilegiadas passam pela API limitada exposta por `electron-preload.cjs`. Senhas salvas nunca são devolvidas ao renderer.
 
-## Servidor local
+## Interface local
 
-`apps/desktop/server.js` serve a interface em `127.0.0.1:8789`. O modo Electron usa `VP_NATIVE=1`, desativando a coleta antiga por Chrome/CDP.
+A interface é carregada diretamente de `apps/desktop/ui/index.html` com `loadFile()`. O fluxo principal não inicia servidor HTTP, Chrome externo, Playwright, porta CDP ou screencast.
+
+## Game Agent
+
+`apps/desktop/game-agent/` é injetado somente nas páginas permitidas do PokeWG. Um `MutationObserver` atualiza o snapshot quando a interface muda e uma reconciliação completa ocorre a cada 20 segundos. O processo principal lê apenas o snapshot pronto, sem varrer `document.body.innerText` de dez contas a cada dois segundos.
 
 ## Isolamento
 
@@ -24,4 +28,4 @@ O IP é consultado usando a `Session` da própria conta. Atualmente as sessões 
 
 ## Legado
 
-`legacy/playwright` e `apps/browser-extension` não fazem parte do fluxo principal. Permanecem para diagnóstico e migração gradual.
+`legacy/playwright`, `legacy/browser-extension` e `legacy/old-launcher` não fazem parte do fluxo principal. Permanecem para diagnóstico e migração gradual.

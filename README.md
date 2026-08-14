@@ -36,9 +36,11 @@ Ou execute `abrir-launcher.cmd`.
 ```text
 apps/
   desktop/             Aplicativo Electron principal
-  browser-extension/  Extensão legada e coletor reutilizado
+    game-agent/        Coletor interno orientado a mudanças
 docs/                  Arquitetura e documentação do projeto
 legacy/
+  browser-extension/  Extensão antiga
+  old-launcher/       Servidor Chrome/CDP antigo
   playwright/          Cliente antigo baseado em Chrome/CDP
 prototypes/
   webview2/            Prova de conceito WebView2
