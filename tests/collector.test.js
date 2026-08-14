@@ -25,3 +25,9 @@ test("batches collector writes and stores metadata without storage values", () =
     assert.equal(repository.listEndpoints()[0].seenCount, 1); assert.equal(repository.listMaps()[0].level, 50); assert.equal(database.prepare("SELECT key_name FROM storage_key_observations").get().key_name, "player-preferences");
   } finally { repository.close(); database.close(); fs.rmSync(directory, { recursive: true, force: true }); }
 });
+
+test("safe flush reports failure without throwing from the timer path", () => {
+  let reported = 0; const repository = new CollectorRepository({}, () => reported++); clearInterval(repository.timer);
+  repository.flush = () => { throw new Error("disk busy"); };
+  assert.doesNotThrow(() => repository.safeFlush()); assert.equal(reported, 1); assert.equal(repository.status().flushErrors, 1);
+});

@@ -25,11 +25,12 @@
 
 ## Próximas etapas
 
-1. aplicar proxy e IP esperado por perfil, com bloqueio preventivo;
-2. calcular XP/h, gold/h e capturas/h sobre as amostras históricas;
-3. fila persistente de ações;
-4. usar o catálogo de mapas na troca manual, no lugar da entrada textual;
-5. auto hunt com estados e recuperação;
-6. captura assistida;
-7. venda assistida com prévia e confirmação explícita;
-8. empacotamento e atualizações.
+1. P2.2 — soak validation de aproximadamente 30 minutos;
+2. P2.5 — renderer orientado a eventos, sem refresh/render global;
+3. P3 — Session Manager e máquina de estados;
+4. P4 — aplicar proxy/Proton e IP esperado por perfil, com bloqueio preventivo;
+5. P5 — Action Engine e fila persistente;
+6. P6 — automação, métricas confiáveis e rotinas assistidas;
+7. empacotamento e atualizações.
+
+P2.1 Discovery Intelligence está concluído. O catálogo aprendido já alimenta a troca manual de mapas.

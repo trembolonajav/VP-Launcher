@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld("vpNative", {
   collectorMaps: () => ipcRenderer.invoke("vp:collector-maps"),
   collectorEndpoints: limit => ipcRenderer.invoke("vp:collector-endpoints", limit),
   collectorObservations: limit => ipcRenderer.invoke("vp:collector-observations", limit),
+  collectorStatus: () => ipcRenderer.invoke("vp:collector-status"),
   startDiscovery: id => ipcRenderer.invoke("vp:start-discovery", id),
   stopDiscovery: id => ipcRenderer.invoke("vp:stop-discovery", id),
   getSetting: (key, fallback) => ipcRenderer.invoke("vp:get-setting", { key, fallback }),

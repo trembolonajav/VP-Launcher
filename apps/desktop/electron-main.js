@@ -199,6 +199,7 @@ function registerIpc() {
   ipcMain.handle("vp:collector-maps", () => collectorRepository.listMaps());
   ipcMain.handle("vp:collector-endpoints", (_event, limit) => collectorRepository.listEndpoints(limit));
   ipcMain.handle("vp:collector-observations", (_event, limit) => collectorRepository.listObservations(limit));
+  ipcMain.handle("vp:collector-status", () => collectorRepository.status());
   ipcMain.handle("vp:start-discovery", async (_event, id) => { if (!views.has(id)) return { ok: false, error: "Abra a sessÃ£o antes de iniciar a descoberta." }; if (discoveryRuns.has(id)) return { ok: true, runId: discoveryRuns.get(id) }; const runId = collectorRepository.startDiscovery(id); discoveryRuns.set(id, runId); await cdpCollector.startDiscovery(id, runId); eventRepository.add({ accountId: id, sessionRunId: sessionRunIds.get(id), type: "DISCOVERY_STARTED", payload: { runId } }); return { ok: true, runId }; });
   ipcMain.handle("vp:stop-discovery", (_event, id) => { const runId = discoveryRuns.get(id); if (!runId) return { ok: true }; cdpCollector.stopDiscovery(id); collectorRepository.stopDiscovery(runId); discoveryRuns.delete(id); eventRepository.add({ accountId: id, sessionRunId: sessionRunIds.get(id), type: "DISCOVERY_STOPPED", payload: { runId } }); return { ok: true }; });
   ipcMain.handle("vp:get-setting", (_event, { key, fallback }) => settingsRepository.get(key, fallback));
@@ -215,7 +216,7 @@ app.whenReady().then(async () => {
   sessionRepository = new SessionRepository(database, app.getVersion());
   eventRepository = new EventRepository(database);
   settingsRepository = new SettingsRepository(database);
-  collectorRepository = new CollectorRepository(database);
+  collectorRepository = new CollectorRepository(database, error => eventRepository.add({ type: "COLLECTOR_FLUSH_FAILED", severity: "ERROR", payload: { error: error.message } }));
   collectorCoordinator = new CollectorCoordinator(collectorRepository, eventRepository, sessionRunIds);
   cdpCollector = new CDPCollector(collectorRepository, eventRepository, id => collectorCoordinator.context(id));
   collectorRepository.retain();
@@ -232,6 +233,7 @@ app.whenReady().then(async () => {
   mainWindow.webContents.on("will-navigate", (event, url) => { if (!url.startsWith("file://")) event.preventDefault(); });
   registerIpc();
   ipcMain.on("vp:agent-delta", (event, payload) => { const id = viewAccountIds.get(event.sender.id); if (!id || !/^https:\/\/(?:[^/]+\.)?pokewg\.com\//i.test(event.senderFrame?.url || event.sender.getURL())) return; collectorCoordinator.ingest(id, payload); });
+  ipcMain.on("vp:agent-action", (event, payload) => { const id = viewAccountIds.get(event.sender.id); if (!id || !/^https:\/\/(?:[^/]+\.)?pokewg\.com\//i.test(event.senderFrame?.url || event.sender.getURL())) return; collectorCoordinator.recordUiAction(id, payload?.label); });
   setInterval(() => { for (const [id, view] of views) void inspectNetwork(id, view); }, 60000).unref();
   await mainWindow.loadFile(path.join(dir, "ui", "index.html"));
 });

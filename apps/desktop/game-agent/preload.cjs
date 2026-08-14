@@ -17,5 +17,6 @@ if (process.isMainFrame && /^(?:test\.)?pokewg\.com$/i.test(location.hostname)) 
     clearTimeout(reconcileTimer); reconcileTimer = setTimeout(() => publish("mutation"), 120);
   };
   const start = () => { reconcile("bootstrap"); new MutationObserver(onMutations).observe(document.documentElement, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["class", "hidden", "aria-hidden"] }); setInterval(() => reconcile("safety-reconcile"), 30000); };
+  addEventListener("click", event => { const control = event.target?.closest?.("button,[role=button],a"); if (!control) return; const label = String(control.innerText || control.textContent || control.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim().slice(0, 160); if (label) ipcRenderer.send("vp:agent-action", { label, at: new Date().toISOString() }); }, true);
   if (document.readyState === "loading") addEventListener("DOMContentLoaded", start, { once: true }); else start();
 }
