@@ -23,6 +23,13 @@ test("vault encrypts each credential and never exposes password in summaries", a
   } finally { database.close(); fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
+test("rotates credential blob when safeStorage requests re-encryption", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "vp-vault-rotate-")); const database = openDatabase(path.join(directory, "test.db")); let encrypted = 0;
+  const rotatingStorage = { ...safeStorage, encryptStringAsync: async value => { encrypted++; return Buffer.from(`enc:${value}:${encrypted}`); }, decryptStringAsync: async () => ({ result: "secret", shouldReEncrypt: true }) };
+  try { const vault = new Vault(database, rotatingStorage, path.join(directory, "missing")); await vault.initialize(); await vault.save({ id: "rotate", provider: "test", username: "user", password: "secret" }); const before = Buffer.from(database.prepare("SELECT secret_blob FROM credentials WHERE id='rotate'").get().secret_blob).toString(); await vault.secret("rotate"); const after = Buffer.from(database.prepare("SELECT secret_blob FROM credentials WHERE id='rotate'").get().secret_blob).toString(); assert.notEqual(after, before); }
+  finally { database.close(); fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
 test("migrates legacy encrypted credentials without deleting the backup", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "vp-vault-legacy-")); const database = openDatabase(path.join(directory, "test.db")); const legacyFile = path.join(directory, "accounts.enc");
   try {

@@ -11,18 +11,22 @@ import { EventRepository } from "./main/storage/EventRepository.js";
 import { SettingsRepository } from "./main/storage/SettingsRepository.js";
 import { BootstrapService } from "./main/services/BootstrapService.js";
 import { Vault, VaultState } from "./main/security/Vault.js";
+import { CollectorRepository } from "./main/storage/CollectorRepository.js";
+import { CollectorCoordinator } from "./main/collector/CollectorCoordinator.js";
+import { CDPCollector } from "./main/collector/CDPCollector.js";
 
 const dir = path.dirname(fileURLToPath(import.meta.url));
-const { app, BrowserWindow, WebContentsView, ipcMain, safeStorage } = electron;
-const config = JSON.parse(fs.readFileSync(path.join(dir, "accounts.json"), "utf8"));
-const gameAgentScript = fs.readFileSync(path.join(dir, "game-agent", "index.js"), "utf8");
+const { app, BrowserWindow, WebContentsView, ipcMain, safeStorage, session } = electron;
+const config = JSON.parse(fs.readFileSync(path.join(dir, "seed", "default-accounts.json"), "utf8"));
 let accounts = new Map();
 const views = new Map();
+const viewAccountIds = new Map();
+const preparedPartitions = new Set();
 const networks = new Map();
-const telemetry = new Map();
 let mainWindow;
-let database, accountRepository, networkRepository, presetRepository, sessionRepository, eventRepository, settingsRepository, vault;
+let database, accountRepository, networkRepository, presetRepository, sessionRepository, eventRepository, settingsRepository, collectorRepository, collectorCoordinator, cdpCollector, vault;
 const sessionRunIds = new Map();
+const discoveryRuns = new Map();
 
 function profileSummaries() {
   const credentials = new Map(vault.summaries().map(item => [item.id, item]));
@@ -65,29 +69,18 @@ async function inspectNetwork(id, view) {
   }
 }
 
-async function collectTelemetry(id, view) {
-  try {
-    const snapshot = await view.webContents.executeJavaScript("window.__vpAgent?.snapshot || null");
-    if (snapshot) {
-      const previous = telemetry.get(id);
-      telemetry.set(id, snapshot);
-      if (snapshot.ready && !previous?.ready) eventRepository.add({ accountId: id, sessionRunId: sessionRunIds.get(id), type: "GAME_READY", payload: { player: snapshot.parsed?.player?.name || null } });
-      const from = previous?.parsed?.activity?.location, to = snapshot.parsed?.activity?.location;
-      if (from && to && from !== to) eventRepository.add({ accountId: id, sessionRunId: sessionRunIds.get(id), type: "MAP_CHANGED", payload: { from, to } });
-    }
-  } catch {}
-}
-
 function createView(id) {
   if (views.has(id)) return views.get(id);
   const account = accounts.get(id);
   if (!account) throw new Error(`Conta desconhecida: ${id}`);
+  const gameSession = session.fromPartition(account.partition);
+  if (!preparedPartitions.has(account.partition)) { gameSession.registerPreloadScript({ type: "frame", filePath: path.join(dir, "game-agent", "preload.cjs") }); preparedPartitions.add(account.partition); }
   const view = new WebContentsView({ webPreferences: { partition: account.partition, backgroundThrottling: false, contextIsolation: true, sandbox: true } });
   view.setBackgroundColor("#050303");
   view.setVisible(false);
   mainWindow.contentView.addChildView(view);
   views.set(id, view);
-  const gameSession = view.webContents.session;
+  viewAccountIds.set(view.webContents.id, id);
   gameSession.setPermissionCheckHandler(() => false);
   gameSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
   view.webContents.on("will-navigate", (event, url) => {
@@ -97,7 +90,6 @@ function createView(id) {
     if (!/^https:\/\/(?:test\.)?pokewg\.com\//i.test(view.webContents.getURL())) return;
     if (/\/play/i.test(view.webContents.getURL())) {
       await view.webContents.executeJavaScript(`localStorage.setItem("vpclient:account", ${JSON.stringify(id)});`).catch(() => {});
-      await view.webContents.executeJavaScript(gameAgentScript).catch(() => {});
     }
     const currentAccount = accountRepository.get(id);
     const credential = currentAccount?.credentialId ? vault.summaries().find(item => item.id === currentAccount.credentialId) : null;
@@ -110,6 +102,7 @@ function createView(id) {
   const sessionRunId = sessionRepository.start(id);
   sessionRunIds.set(id, sessionRunId);
   eventRepository.add({ accountId: id, sessionRunId, type: "SESSION_STARTED" });
+  void cdpCollector.attach(id, view.webContents);
   void view.webContents.loadURL(`${account.gameUrl}?vpclient_account=${encodeURIComponent(id)}`);
   void inspectNetwork(id, view);
   return view;
@@ -118,11 +111,13 @@ function createView(id) {
 function closeView(id, reason = "USER_CLOSED") {
   const view = views.get(id);
   if (!view) return;
+  cdpCollector.detach(id);
+  const discoveryRunId = discoveryRuns.get(id); if (discoveryRunId) { collectorRepository.stopDiscovery(discoveryRunId); discoveryRuns.delete(id); }
+  viewAccountIds.delete(view.webContents.id);
   mainWindow.contentView.removeChildView(view);
   view.webContents.close();
   views.delete(id);
   networks.delete(id);
-  telemetry.delete(id);
   const sessionRunId = sessionRunIds.get(id);
   if (sessionRunId) {
     sessionRepository.end(sessionRunId, reason);
@@ -159,7 +154,7 @@ async function runGameAction(id, action, payload = {}) {
 
 function registerIpc() {
   ipcMain.handle("vp:accounts", async () => {
-    return accountRepository.list().map(account => ({ ...account, running: views.has(account.id), url: views.get(account.id)?.webContents.getURL() || null, telemetry: telemetry.get(account.id) || null, network: networks.get(account.id) || null }));
+    return accountRepository.list().map(account => ({ ...account, running: views.has(account.id), url: views.get(account.id)?.webContents.getURL() || null, telemetry: collectorCoordinator.state(account.id), network: networks.get(account.id) || null }));
   });
   ipcMain.handle("vp:open-embedded", (_event, id) => { try { createView(id); return { ok: true }; } catch (error) { return { ok: false, error: error.message }; } });
   ipcMain.handle("vp:layout-embedded", (_event, layouts = []) => {
@@ -200,6 +195,10 @@ function registerIpc() {
   ipcMain.handle("vp:presets", () => presetRepository.list());
   ipcMain.handle("vp:save-preset", (_event, preset) => presetRepository.save(preset));
   ipcMain.handle("vp:events", (_event, filter) => eventRepository.list(filter));
+  ipcMain.handle("vp:collector-maps", () => collectorRepository.listMaps());
+  ipcMain.handle("vp:collector-endpoints", (_event, limit) => collectorRepository.listEndpoints(limit));
+  ipcMain.handle("vp:start-discovery", (_event, id) => { if (!views.has(id)) return { ok: false, error: "Abra a sessÃ£o antes de iniciar a descoberta." }; if (discoveryRuns.has(id)) return { ok: true, runId: discoveryRuns.get(id) }; const runId = collectorRepository.startDiscovery(id); discoveryRuns.set(id, runId); eventRepository.add({ accountId: id, sessionRunId: sessionRunIds.get(id), type: "DISCOVERY_STARTED", payload: { runId } }); return { ok: true, runId }; });
+  ipcMain.handle("vp:stop-discovery", (_event, id) => { const runId = discoveryRuns.get(id); if (!runId) return { ok: true }; collectorRepository.stopDiscovery(runId); discoveryRuns.delete(id); eventRepository.add({ accountId: id, sessionRunId: sessionRunIds.get(id), type: "DISCOVERY_STOPPED", payload: { runId } }); return { ok: true }; });
   ipcMain.handle("vp:get-setting", (_event, { key, fallback }) => settingsRepository.get(key, fallback));
   ipcMain.handle("vp:set-setting", (_event, { key, value }) => settingsRepository.set(key, value));
   ipcMain.handle("vp:update-account", (_event, update) => { const account = accountRepository.update(update); accounts = new Map(accountRepository.list().map(item => [item.id, item])); return account; });
@@ -214,6 +213,9 @@ app.whenReady().then(async () => {
   sessionRepository = new SessionRepository(database, app.getVersion());
   eventRepository = new EventRepository(database);
   settingsRepository = new SettingsRepository(database);
+  collectorRepository = new CollectorRepository(database);
+  collectorCoordinator = new CollectorCoordinator(collectorRepository, eventRepository, sessionRunIds);
+  cdpCollector = new CDPCollector(collectorRepository, eventRepository);
   new BootstrapService(database, accountRepository).run(config);
   const recovered = sessionRepository.recoverUnclean();
   if (recovered) eventRepository.add({ type: "UNCLEAN_SHUTDOWN_RECOVERED", severity: "WARN", payload: { sessions: recovered } });
@@ -226,8 +228,8 @@ app.whenReady().then(async () => {
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   mainWindow.webContents.on("will-navigate", (event, url) => { if (!url.startsWith("file://")) event.preventDefault(); });
   registerIpc();
+  ipcMain.on("vp:agent-delta", (event, payload) => { const id = viewAccountIds.get(event.sender.id); if (!id || !/^https:\/\/(?:[^/]+\.)?pokewg\.com\//i.test(event.senderFrame?.url || event.sender.getURL())) return; collectorCoordinator.ingest(id, payload); });
   setInterval(() => { for (const [id, view] of views) void inspectNetwork(id, view); }, 60000).unref();
-  setInterval(() => { for (const [id, view] of views) void collectTelemetry(id, view); }, 2000).unref();
   await mainWindow.loadFile(path.join(dir, "ui", "index.html"));
 });
 

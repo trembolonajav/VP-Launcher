@@ -3,8 +3,8 @@ import fs from "node:fs";
 import test from "node:test";
 
 const main = fs.readFileSync("apps/desktop/electron-main.js", "utf8");
-const agent = fs.readFileSync("apps/desktop/game-agent/index.js", "utf8");
-const accounts = JSON.parse(fs.readFileSync("apps/desktop/accounts.json", "utf8"));
+const agent = ["preload.cjs", "readers/state-readers.cjs", "readers/ui-reader.cjs"].map(file => fs.readFileSync(`apps/desktop/game-agent/${file}`, "utf8")).join("\n");
+const accounts = JSON.parse(fs.readFileSync("apps/desktop/seed/default-accounts.json", "utf8"));
 
 test("production main has no localhost, external Chrome or Playwright path", () => {
   for (const forbidden of ["127.0.0.1:8789", "startScreencast", "remote-debugging", "playwright", "server.js"]) {
@@ -27,4 +27,11 @@ test("game agent is independent from extension and localhost APIs", () => {
 test("renderer cannot import sqlite or safeStorage", () => {
   const renderer = fs.readFileSync("apps/desktop/ui/app.js", "utf8");
   assert.equal(/node:sqlite|safeStorage/.test(renderer), false);
+  assert.equal(/fetch\(|\/api\//.test(renderer), false);
+});
+
+test("collector uses preload deltas instead of page polling injection", () => {
+  assert.match(main, /registerPreloadScript/);
+  assert.match(main, /vp:agent-delta/);
+  assert.equal(/collectTelemetry|gameAgentScript/.test(main), false);
 });

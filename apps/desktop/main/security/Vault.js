@@ -28,7 +28,14 @@ export class Vault {
   async secret(id) {
     const row = this.database.prepare("SELECT username,secret_blob,auto_login AS autoLogin FROM credentials WHERE id=?").get(id);
     if (!row) return { state: VaultState.EMPTY };
-    try { const decrypted = await this.safeStorage.decryptStringAsync(Buffer.from(row.secret_blob)); return { state: VaultState.READY, username: row.username, password: decrypted.result, autoLogin: Boolean(row.autoLogin) }; }
+    try {
+      const decrypted = await this.safeStorage.decryptStringAsync(Buffer.from(row.secret_blob));
+      if (decrypted.shouldReEncrypt) {
+        const rotated = await this.safeStorage.encryptStringAsync(decrypted.result);
+        this.database.prepare("UPDATE credentials SET secret_blob=?,updated_at=? WHERE id=?").run(rotated, new Date().toISOString(), id);
+      }
+      return { state: VaultState.READY, username: row.username, password: decrypted.result, autoLogin: Boolean(row.autoLogin) };
+    }
     catch (error) { return { state: VaultState.DECRYPT_FAILED, error: error.message }; }
   }
   async migrateLegacy() {

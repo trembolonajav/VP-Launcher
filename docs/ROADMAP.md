@@ -15,13 +15,17 @@
 - Vault assíncrono e migração do cofre legado;
 - perfis de rede e presets persistentes;
 - histórico de sessões, crash recovery, eventos e settings.
+- Agent V2 por preload de sessão, sem polling por `executeJavaScript`;
+- amostras e eventos de jogo persistidos no SQLite;
+- catálogo de mapas, endpoints redigidos e Discovery Mode;
+- telas de mapas/discovery e logs operacionais.
 
 ## Próximas etapas
 
 1. aplicar proxy e IP esperado por perfil, com bloqueio preventivo;
-2. telemetria histórica de XP/h, gold/h e capturas/h;
-3. fila persistente de ações e eventos;
-4. catálogo de mapas no lugar de entrada textual;
+2. calcular XP/h, gold/h e capturas/h sobre as amostras históricas;
+3. fila persistente de ações;
+4. usar o catálogo de mapas na troca manual, no lugar da entrada textual;
 5. auto hunt com estados e recuperação;
 6. captura assistida;
 7. venda assistida com prévia e confirmação explícita;

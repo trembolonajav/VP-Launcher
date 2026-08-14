@@ -61,7 +61,6 @@ const state = {
   routines: [false, false, false, false],
   live: [],        // accounts reais do backend: {id,name,running,pid}
   gameUrl: '',
-  serverDown: false,
   clock: '',
   busy: {}         // ids em transição (abrir/fechar)
   ,embedded: []
@@ -69,6 +68,9 @@ const state = {
   ,networkProfiles: []
   ,presets: []
   ,events: []
+  ,maps: []
+  ,endpoints: []
+  ,discovery: {}
 };
 
 const svg = (d, opts = {}) => {
@@ -83,8 +85,9 @@ function accountVM(i) {
   const liveRunning = live ? live.running === true : false;
   const telemetry = live?.telemetry || null;
   const parsed = telemetry?.parsed || {};
-  const player = parsed.player || null;
-  const pokemon = parsed.activePokemon || null;
+  const player = telemetry?.identity ? { name: telemetry.identity.player, level: telemetry.identity.level } : parsed.player || null;
+  const pokemon = telemetry?.pokemon || parsed.activePokemon || null;
+  const activity = telemetry?.game || parsed.activity || {};
   const off = !liveRunning;
   const paused = false;
   const on = liveRunning && !state.autoOff.includes(i);
@@ -96,7 +99,7 @@ function accountVM(i) {
     num: String(i + 1).padStart(2, '0'),
     name: live ? live.name : 'Conta ' + String(i + 1).padStart(2, '0'),
     profile: player?.name || (liveRunning ? 'lendo dados do jogo' : '—'),
-    map: parsed.activity?.location || '—',
+    map: telemetry?.location?.current || activity.location || '—',
     statusLabel: off ? 'offline' : telemetry ? 'online' : 'aguardando dados',
     statusColor: off ? PALETTE.red : paused ? PALETTE.amber : PALETTE.green,
     statusBg: off ? 'rgba(195,54,41,.12)' : paused ? 'rgba(229,179,79,.1)' : 'rgba(37,211,102,.1)',
@@ -107,7 +110,7 @@ function accountVM(i) {
     ballsColor: '#6f5f56',
     metricColor: off ? '#6f5f56' : PALETTE.cream,
     goldColor: off ? '#6f5f56' : PALETTE.gold,
-    rule: off ? 'Sessão encerrada' : parsed.activity?.hunting ? 'Caçando' : parsed.activity?.inCity ? 'Na cidade' : 'Monitorando',
+    rule: off ? 'Sessão encerrada' : activity.hunting ? 'Caçando' : activity.inCity ? 'Na cidade' : 'Monitorando',
     ruleColor: on ? '#b5a196' : '#7d6d64',
     switchBg: on ? 'rgba(37,211,102,.24)' : '#0b0706',
     switchBorder: on ? 'rgba(56,216,120,.5)' : 'rgba(216,138,74,.28)',
@@ -121,8 +124,8 @@ function accountVM(i) {
     uptime: telemetry?.capturedAt ? new Date(telemetry.capturedAt).toLocaleTimeString('pt-BR') : '—',
     player,
     pokemon,
-    capacity: parsed.capacity || null,
-    collection: parsed.collection || null,
+    capacity: telemetry?.inventory || parsed.capacity || null,
+    collection: telemetry?.collection || parsed.collection || null,
     previewNote: off ? 'sessão fechada' : '640 × 400',
     running: liveRunning,
     off,
@@ -227,9 +230,7 @@ function render() {
   const anySelected = state.checked.length > 0;
   const allBoxBg = anySelected ? PALETTE.gold : '#0b0706';
   const selectionLabel = anySelected ? state.checked.length + ' de 10 selecionadas' : 'nenhuma selecionada';
-  const conn = state.serverDown
-    ? { color: '#e48275', shadow: 'rgba(228,130,117,.7)', label: 'launcher offline' }
-    : { color: '#25d366', shadow: 'rgba(37,211,102,.7)', label: (state.gameUrl ? state.gameUrl.replace(/^https?:\/\//, '').replace(/\/.*$/, '') : 'pokewg.com') + ' conectado' };
+  const conn = { color: '#25d366', shadow: 'rgba(37,211,102,.7)', label: (state.gameUrl ? state.gameUrl.replace(/^https?:\/\//, '').replace(/\/.*$/, '') : 'pokewg.com') + ' conectado' };
 
   const html = `
 <div style="min-height:100vh;background:#0a0605;color:#f7eee7;display:flex;flex-direction:column;font-size:13px;font-variant-numeric:tabular-nums;">
@@ -389,9 +390,20 @@ function render() {
   ${renderIconPack(iconPack)}
 </div>`;
 
-  document.getElementById('root').innerHTML = html + (state.nav==='perfis' ? renderProfilesPanel() : '');
+  const panel = state.nav==='perfis' ? renderProfilesPanel() : state.nav==='mapas' ? renderCollectorPanel() : state.nav==='logs' ? renderLogsPanel() : '';
+  document.getElementById('root').innerHTML = html + panel;
   setTimeout(syncEmbeddedViews,0);
 }
+
+function panelShell(title, subtitle, body, actions='') { return `<div style="position:fixed;z-index:20;left:74px;right:0;top:58px;bottom:0;background:#0a0605;overflow:auto;padding:28px;"><div style="max-width:1180px;margin:auto;"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:22px;"><div><div style="font-family:Cinzel,serif;font-size:22px;color:#e5b34f;font-weight:700;">${title}</div><div style="color:#8a7a70;margin-top:6px;">${subtitle}</div></div>${actions}</div>${body}</div></div>`; }
+function renderCollectorPanel(){
+  const account=state.live[state.selected],active=account&&state.discovery[account.id];
+  const actions=account?`<button data-discovery="${active?'stop':'start'}" style="height:36px;padding:0 16px;border:1px solid rgba(229,179,79,.45);border-radius:9px;background:${active?'#421414':'#85191b'};color:#f7eee7;cursor:pointer;">${active?'Parar descoberta':'Iniciar descoberta'} · ${esc(account.name)}</button>`:'';
+  const maps=state.maps.map(m=>`<div style="padding:10px;border-bottom:1px solid #2b1b15;"><b>${esc(m.label)}</b><span style="float:right;color:#8a7a70;">${m.level?`Nv ${m.level} · `:''}${m.seenCount} leituras</span></div>`).join('')||'<div style="padding:18px;color:#8a7a70;">Abra uma conta e visite o menu Mapa para iniciar o catálogo.</div>';
+  const endpoints=state.endpoints.map(e=>`<div style="padding:9px;border-bottom:1px solid #2b1b15;font-family:monospace;color:#d7c5bb;"><span style="color:#e5b34f;">${esc(e.method)}</span> ${esc(e.origin+e.path)}<span style="float:right;color:#8a7a70;">${e.seenCount}×</span></div>`).join('')||'<div style="padding:18px;color:#8a7a70;">Nenhum endpoint observado nesta instalação.</div>';
+  return panelShell('Mapas e Discovery','Catálogo local criado pelo Agent V2 e pelo CDP interno; sem corpos, cookies ou tokens.',`<div style="display:grid;grid-template-columns:1fr 1.35fr;gap:16px;"><section style="border:1px solid #39231b;border-radius:12px;overflow:hidden;"><h3 style="padding:13px;margin:0;color:#f7eee7;">Mapas observados</h3>${maps}</section><section style="border:1px solid #39231b;border-radius:12px;overflow:hidden;"><h3 style="padding:13px;margin:0;color:#f7eee7;">Endpoints redigidos</h3>${endpoints}</section></div>`,actions);
+}
+function renderLogsPanel(){ const rows=state.events.map(e=>`<div style="display:grid;grid-template-columns:170px 130px 1fr;gap:14px;padding:10px;border-bottom:1px solid #2b1b15;"><span style="color:#8a7a70;">${esc(e.createdAt||e.occurredAt||'')}</span><b style="color:${e.severity==='ERROR'?'#e48275':'#e5b34f'};">${esc(e.type)}</b><span>${esc(e.accountId||'sistema')}</span></div>`).join('')||'<div style="padding:18px;color:#8a7a70;">Nenhum evento registrado.</div>'; return panelShell('Logs operacionais','Eventos persistidos por conta e sessão.',`<section style="border:1px solid #39231b;border-radius:12px;overflow:hidden;">${rows}</section>`); }
 
 function renderProfilesPanel(){
   const profiles=state.profiles.length?state.profiles:state.live.map(a=>({id:a.id,name:a.name,configured:false,username:'',autoLogin:true}));
@@ -622,27 +634,15 @@ function notice(message = '') {
   el.textContent = message;
   el.style.display = message ? 'block' : 'none';
 }
-async function request(url, options) {
-  let response;
-  try { response = await fetch(url, options); }
-  catch { throw new Error('O servidor do launcher foi encerrado. Feche esta aba e execute abrir-launcher.cmd novamente.'); }
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || `Erro HTTP ${response.status}`);
-  return data;
-}
-const post = (url, data = {}) => request(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
-
 async function refresh() {
   try {
-    const data = window.vpNative?.accounts ? {accounts:await window.vpNative.accounts(),gameUrl:'https://pokewg.com/play'} : await request('/api/status');
-    if(window.vpNative?.events)state.events=await window.vpNative.events({limit:200});
-    if(window.vpNative?.accounts)state.embedded=data.accounts.map((a,i)=>a.running?i:-1).filter(i=>i>=0);
+    const data = {accounts:await window.vpNative.accounts(),gameUrl:'https://pokewg.com/play'};
+    state.events=await window.vpNative.events({limit:200});
+    state.embedded=data.accounts.map((a,i)=>a.running?i:-1).filter(i=>i>=0);
     state.live = (data.accounts || []).map((account,index)=>({...account,running:account.running||state.embedded.includes(index)}));
     state.gameUrl = data.gameUrl || '';
-    state.serverDown = false;
     notice('');
   } catch (error) {
-    state.serverDown = true;
     notice(error.message);
   }
   if(state.nav!=='perfis')render();
@@ -653,6 +653,7 @@ async function loadProfiles(){
   [state.profiles,state.networkProfiles,state.presets]=await Promise.all([window.vpNative.profiles(),window.vpNative.networkProfiles(),window.vpNative.presets()]);
   render();
 }
+async function loadCollector(){ [state.maps,state.endpoints]=await Promise.all([window.vpNative.collectorMaps(),window.vpNative.collectorEndpoints(300)]); render(); }
 function profileFromForm(form){return{id:form.dataset.profileForm,name:form.elements.name.value,username:form.elements.username.value,password:form.elements.password.value,autoLogin:form.elements.autoLogin.checked,networkProfileId:form.elements.networkProfileId.value,presetId:form.elements.presetId.value};}
 async function saveProfileForm(form){
   const profile=profileFromForm(form);
@@ -674,28 +675,13 @@ async function syncEmbeddedViews(){
   await window.vpNative.layoutEmbedded(layouts).catch(()=>{});
 }
 
-const LAYOUT = '4x4'; // 10 contas → grade 4x4 para distribuir as janelas na tela
-
 async function openIndexes(indexes) {
-  if(window.vpNative?.openEmbedded){
-    for(const i of indexes){const id=state.live[i]?.id;if(!id)continue;const result=await window.vpNative.openEmbedded(id);if(result.ok&&!state.embedded.includes(i))state.embedded.push(i);else if(!result.ok)notice(result.error);}
-    render();return;
-  }
-  const targets = indexes.map(i => state.live[i]).filter(a => a && !a.running);
-  for (const a of targets) {
-    try { await post('/api/open', { id: a.id, index: state.live.indexOf(a), layout: LAYOUT }); }
-    catch (error) { notice(error.message); }
-  }
-  await refresh();
+  for(const i of indexes){const id=state.live[i]?.id;if(!id)continue;const result=await window.vpNative.openEmbedded(id);if(result.ok&&!state.embedded.includes(i))state.embedded.push(i);else if(!result.ok)notice(result.error);}
+  render();
 }
 async function closeIndexes(indexes) {
-  if(window.vpNative?.closeEmbedded){for(const i of indexes){const id=state.live[i]?.id;if(id){await window.vpNative.closeEmbedded(id);state.embedded=state.embedded.filter(x=>x!==i);}}render();return;}
-  const targets = indexes.map(i => state.live[i]).filter(a => a && a.running);
-  for (const a of targets) {
-    try { await post('/api/close', { id: a.id }); }
-    catch (error) { notice(error.message); }
-  }
-  await refresh();
+  for(const i of indexes){const id=state.live[i]?.id;if(id){await window.vpNative.closeEmbedded(id);state.embedded=state.embedded.filter(x=>x!==i);}}
+  render();
 }
 
 async function handleAction(action) {
@@ -709,16 +695,12 @@ async function handleAction(action) {
     case 'bulk-pause':
       return; // sem backend de automação — decorativo
     case 'focus-selected':
-      if(window.vpNative){state.view='focus';render();if(!state.live[i]?.running)return openIndexes([i]);return;}
-      if(!state.live[i]?.running)return openIndexes([i]);
-      return post('/api/window',{id:state.live[i].id,visible:true});
+      state.view='focus';render();if(!state.live[i]?.running)return openIndexes([i]);return;
     case 'close-selected':
       if (state.live[i] && state.live[i].running && !confirm('Encerrar a sessão selecionada?')) return;
       return closeIndexes([i]);
     case 'hide-selected':
-      if(window.vpNative){state.view='list';return render();}
-      if(state.live[i]?.running)return post('/api/window',{id:state.live[i].id,visible:false});
-      return;
+      state.view='list';return render();
     case 'change-map': {
       if(!window.vpNative?.gameAction)return notice('Troca de mapa exige o launcher Electron.');
       if(!state.live[i]?.running)return notice('Abra a sessão antes de trocar o mapa.');
@@ -741,15 +723,13 @@ async function handleAction(action) {
 
 // ---------- Delegação de eventos ----------
 document.addEventListener('click', async e => {
-  const el = e.target.closest('[data-stream],[data-nav],[data-view],[data-select],[data-check],[data-autotoggle],[data-routine],[data-focus],[data-menu],[data-action]');
+  const el = e.target.closest('[data-nav],[data-view],[data-select],[data-check],[data-autotoggle],[data-routine],[data-focus],[data-menu],[data-action]');
   if (!el) return;
-
-  if(el.dataset.stream){e.stopPropagation();const rect=el.getBoundingClientRect();await post('/api/input',{id:el.dataset.stream,x:(e.clientX-rect.left)/rect.width,y:(e.clientY-rect.top)/rect.height}).catch(error=>notice(error.message));return;}
 
   if (el.dataset.check != null) { e.stopPropagation(); const i = +el.dataset.check; state.checked = state.checked.includes(i) ? state.checked.filter(x => x !== i) : state.checked.concat(i); return render(); }
   if (el.dataset.autotoggle != null) { e.stopPropagation(); const i = +el.dataset.autotoggle; state.autoOff = state.autoOff.includes(i) ? state.autoOff.filter(x => x !== i) : state.autoOff.concat(i); return render(); }
   if (el.dataset.routine != null) { const i = +el.dataset.routine; state.routines = state.routines.map((v, j) => j === i ? !v : v); return render(); }
-  if (el.dataset.nav != null) { state.nav = el.dataset.nav;render();if(state.nav==='perfis')await loadProfiles();return; }
+  if (el.dataset.nav != null) { state.nav = el.dataset.nav;render();if(state.nav==='perfis')await loadProfiles();if(state.nav==='mapas')await loadCollector();return; }
   if (el.dataset.view != null) { state.view = el.dataset.view; return render(); }
   if (el.dataset.select != null) { state.selected = +el.dataset.select; return render(); }
   if (el.dataset.focus != null) { e.stopPropagation(); state.selected = +el.dataset.focus; state.view = 'focus'; render(); return openIndexes([state.selected]); }
@@ -762,6 +742,8 @@ document.addEventListener('submit',async e=>{
   const form=e.target.closest('[data-profile-form]');if(!form)return;e.preventDefault();await saveProfileForm(form);
 });
 document.addEventListener('click',async e=>{
+  const discovery=e.target.closest('[data-discovery]');
+  if(discovery){const account=state.live[state.selected];if(!account)return;const starting=discovery.dataset.discovery==='start';const result=await (starting?window.vpNative.startDiscovery(account.id):window.vpNative.stopDiscovery(account.id));if(result.ok){state.discovery[account.id]=starting?result.runId:null;await loadCollector();}else notice(result.error);return;}
   const login=e.target.closest('[data-profile-login]');
   if(login){const form=login.closest('[data-profile-form]');const saved=await saveProfileForm(form);if(!saved.ok)return;const i=state.live.findIndex(a=>a.id===login.dataset.profileLogin);if(i>=0&&!state.live[i].running)await openIndexes([i]);const result=await window.vpNative.loginProfile(login.dataset.profileLogin);notice(result.ok?'Login enviado para a conta.':result.error);return;}
   const remove=e.target.closest('[data-profile-delete]');

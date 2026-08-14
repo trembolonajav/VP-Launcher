@@ -26,7 +26,7 @@ Cada conta possui cookies, cache, IndexedDB e localStorage próprios. Credenciai
 
 `apps/desktop/main/storage/` usa `node:sqlite`. O arquivo `vp-launcher.db` é criado em `app.getPath("userData")` com foreign keys, WAL, synchronous NORMAL e busy timeout. Migrations SQL são transacionais, versionadas e protegidas por checksum.
 
-SQLite é a fonte oficial para contas, perfis de rede, presets, sessões, eventos e configurações. `accounts.json` serve somente como seed no primeiro boot. As partições existentes `persist:conta-XX` são preservadas.
+SQLite é a fonte oficial para contas, perfis de rede, presets, sessões, eventos e configurações. `seed/default-accounts.json` serve somente como seed no primeiro boot. As partições existentes `persist:conta-XX` são preservadas.
 
 ## Vault
 

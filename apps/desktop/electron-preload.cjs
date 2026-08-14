@@ -15,6 +15,10 @@ contextBridge.exposeInMainWorld("vpNative", {
   presets: () => ipcRenderer.invoke("vp:presets"),
   savePreset: preset => ipcRenderer.invoke("vp:save-preset", preset),
   events: filter => ipcRenderer.invoke("vp:events", filter),
+  collectorMaps: () => ipcRenderer.invoke("vp:collector-maps"),
+  collectorEndpoints: limit => ipcRenderer.invoke("vp:collector-endpoints", limit),
+  startDiscovery: id => ipcRenderer.invoke("vp:start-discovery", id),
+  stopDiscovery: id => ipcRenderer.invoke("vp:stop-discovery", id),
   getSetting: (key, fallback) => ipcRenderer.invoke("vp:get-setting", { key, fallback }),
   setSetting: (key, value) => ipcRenderer.invoke("vp:set-setting", { key, value }),
   updateAccount: update => ipcRenderer.invoke("vp:update-account", update)
