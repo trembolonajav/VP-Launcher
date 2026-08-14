@@ -71,6 +71,9 @@ const state = {
   ,maps: []
   ,endpoints: []
   ,discovery: {}
+  ,logFilter: 'TODOS'
+  ,mapPicker: false
+  ,discoveryEvents: []
 };
 
 const svg = (d, opts = {}) => {
@@ -391,7 +394,7 @@ function render() {
 </div>`;
 
   const panel = state.nav==='perfis' ? renderProfilesPanel() : state.nav==='mapas' ? renderCollectorPanel() : state.nav==='logs' ? renderLogsPanel() : '';
-  document.getElementById('root').innerHTML = html + panel;
+  document.getElementById('root').innerHTML = html + panel + (state.mapPicker ? renderMapPicker() : '');
   setTimeout(syncEmbeddedViews,0);
 }
 
@@ -403,7 +406,9 @@ function renderCollectorPanel(){
   const endpoints=state.endpoints.map(e=>`<div style="padding:9px;border-bottom:1px solid #2b1b15;font-family:monospace;color:#d7c5bb;"><span style="color:#e5b34f;">${esc(e.method)}</span> ${esc(e.origin+e.path)}<span style="float:right;color:#8a7a70;">${e.seenCount}×</span></div>`).join('')||'<div style="padding:18px;color:#8a7a70;">Nenhum endpoint observado nesta instalação.</div>';
   return panelShell('Mapas e Discovery','Catálogo local criado pelo Agent V2 e pelo CDP interno; sem corpos, cookies ou tokens.',`<div style="display:grid;grid-template-columns:1fr 1.35fr;gap:16px;"><section style="border:1px solid #39231b;border-radius:12px;overflow:hidden;"><h3 style="padding:13px;margin:0;color:#f7eee7;">Mapas observados</h3>${maps}</section><section style="border:1px solid #39231b;border-radius:12px;overflow:hidden;"><h3 style="padding:13px;margin:0;color:#f7eee7;">Endpoints redigidos</h3>${endpoints}</section></div>`,actions);
 }
-function renderLogsPanel(){ const rows=state.events.map(e=>`<div style="display:grid;grid-template-columns:170px 130px 1fr;gap:14px;padding:10px;border-bottom:1px solid #2b1b15;"><span style="color:#8a7a70;">${esc(e.createdAt||e.occurredAt||'')}</span><b style="color:${e.severity==='ERROR'?'#e48275':'#e5b34f'};">${esc(e.type)}</b><span>${esc(e.accountId||'sistema')}</span></div>`).join('')||'<div style="padding:18px;color:#8a7a70;">Nenhum evento registrado.</div>'; return panelShell('Logs operacionais','Eventos persistidos por conta e sessão.',`<section style="border:1px solid #39231b;border-radius:12px;overflow:hidden;">${rows}</section>`); }
+function eventCategory(e){if(/NETWORK|COLLECTOR|SOCKET|ENDPOINT/.test(e.type))return'NETWORK';if(/ACTION/.test(e.type))return'ACTION';if(/MAP|POKEMON|GOLD|GAME|UI_/.test(e.type))return'GAME';return'SYSTEM';}
+function renderLogsPanel(){ const filters=['TODOS','GAME','NETWORK','ACTION','SYSTEM'].map(x=>`<button data-log-filter="${x}" style="padding:7px 11px;border:1px solid #493025;border-radius:7px;background:${state.logFilter===x?'#85191b':'#160f0c'};color:#f7eee7;cursor:pointer;">${x}</button>`).join(''); const discovered=state.discoveryEvents.map(x=>({ ...x,category:'NETWORK',type:`${x.category} ${x.direction||''} ${x.target||''}`.trim(),severity:'INFO' })); const all=state.events.concat(discovered).sort((a,b)=>String(b.occurredAt).localeCompare(String(a.occurredAt))); const rows=all.filter(e=>state.logFilter==='TODOS'||eventCategory(e)===state.logFilter||e.category===state.logFilter).map(e=>`<div style="display:grid;grid-template-columns:150px 80px 170px 1fr;gap:14px;padding:10px;border-bottom:1px solid #2b1b15;"><span style="color:#8a7a70;">${esc(e.occurredAt||'')}</span><span style="color:#d98350;">${esc(e.category||eventCategory(e))}</span><b style="color:${e.severity==='ERROR'?'#e48275':'#e5b34f'};">${esc(e.type)}</b><span>${esc([e.accountId||'sistema',e.uiSurface,e.location].filter(Boolean).join(' · '))}</span></div>`).join('')||'<div style="padding:18px;color:#8a7a70;">Nenhum evento nesta categoria.</div>'; return panelShell('Logs operacionais','Eventos persistidos por conta e sessão.',`<div style="display:flex;gap:7px;margin-bottom:12px;">${filters}</div><section style="border:1px solid #39231b;border-radius:12px;overflow:hidden;">${rows}</section>`); }
+function renderMapPicker(){const account=state.live[state.selected];return `<div style="position:fixed;z-index:40;inset:0;background:rgba(0,0,0,.72);display:grid;place-items:center;"><div style="width:min(520px,90vw);padding:22px;border:1px solid #6a422c;border-radius:14px;background:#180e0b;"><h2 style="margin:0 0 6px;color:#e5b34f;font-family:Cinzel,serif;">Trocar mapa</h2><p style="color:#8a7a70;">${esc(account?.name||'Conta')} · selecione um mapa descoberto.</p><select id="vp-map-select" style="width:100%;height:42px;background:#090504;color:#f7eee7;border:1px solid #493025;border-radius:8px;padding:0 10px;">${state.maps.map(m=>`<option value="${esc(m.label)}">${esc(m.label)}${m.level?` · Nv ${m.level}`:''}</option>`).join('')}</select><div style="display:flex;gap:9px;margin-top:18px;"><button data-map-go style="flex:1;height:38px;background:#85191b;color:white;border:1px solid #d98350;border-radius:8px;cursor:pointer;">IR</button><button data-map-cancel style="height:38px;background:#120b09;color:#b5a196;border:1px solid #493025;border-radius:8px;cursor:pointer;">Cancelar</button></div></div></div>`;}
 
 function renderProfilesPanel(){
   const profiles=state.profiles.length?state.profiles:state.live.map(a=>({id:a.id,name:a.name,configured:false,username:'',autoLogin:true}));
@@ -654,6 +659,7 @@ async function loadProfiles(){
   render();
 }
 async function loadCollector(){ [state.maps,state.endpoints]=await Promise.all([window.vpNative.collectorMaps(),window.vpNative.collectorEndpoints(300)]); render(); }
+async function loadLogs(){state.discoveryEvents=await window.vpNative.collectorObservations(300);render();}
 function profileFromForm(form){return{id:form.dataset.profileForm,name:form.elements.name.value,username:form.elements.username.value,password:form.elements.password.value,autoLogin:form.elements.autoLogin.checked,networkProfileId:form.elements.networkProfileId.value,presetId:form.elements.presetId.value};}
 async function saveProfileForm(form){
   const profile=profileFromForm(form);
@@ -704,13 +710,7 @@ async function handleAction(action) {
     case 'change-map': {
       if(!window.vpNative?.gameAction)return notice('Troca de mapa exige o launcher Electron.');
       if(!state.live[i]?.running)return notice('Abra a sessão antes de trocar o mapa.');
-      const map=prompt('Nome do mapa/hunt exatamente como aparece no jogo:');
-      if(!map)return;
-      notice(`Trocando ${state.live[i].name} para ${map}…`);
-      const result=await window.vpNative.gameAction({id:state.live[i].id,action:'change-map',payload:{map}});
-      if(!result.ok){const available=result.available?.length?` Disponíveis: ${result.available.join(', ')}`:'';return notice((result.error||'Não foi possível trocar o mapa.')+available);}
-      notice(`Mapa selecionado: ${result.map}`);
-      return;
+      if(!state.maps.length)await loadCollector();if(!state.maps.length)return notice('Abra o menu Mapa no jogo para o catálogo aprender as opções.');state.mapPicker=true;return render();
     }
     case 'restart-selected':
       await closeIndexes([i]);
@@ -729,7 +729,7 @@ document.addEventListener('click', async e => {
   if (el.dataset.check != null) { e.stopPropagation(); const i = +el.dataset.check; state.checked = state.checked.includes(i) ? state.checked.filter(x => x !== i) : state.checked.concat(i); return render(); }
   if (el.dataset.autotoggle != null) { e.stopPropagation(); const i = +el.dataset.autotoggle; state.autoOff = state.autoOff.includes(i) ? state.autoOff.filter(x => x !== i) : state.autoOff.concat(i); return render(); }
   if (el.dataset.routine != null) { const i = +el.dataset.routine; state.routines = state.routines.map((v, j) => j === i ? !v : v); return render(); }
-  if (el.dataset.nav != null) { state.nav = el.dataset.nav;render();if(state.nav==='perfis')await loadProfiles();if(state.nav==='mapas')await loadCollector();return; }
+  if (el.dataset.nav != null) { state.nav = el.dataset.nav;render();if(state.nav==='perfis')await loadProfiles();if(state.nav==='mapas')await loadCollector();if(state.nav==='logs')await loadLogs();return; }
   if (el.dataset.view != null) { state.view = el.dataset.view; return render(); }
   if (el.dataset.select != null) { state.selected = +el.dataset.select; return render(); }
   if (el.dataset.focus != null) { e.stopPropagation(); state.selected = +el.dataset.focus; state.view = 'focus'; render(); return openIndexes([state.selected]); }
@@ -742,6 +742,9 @@ document.addEventListener('submit',async e=>{
   const form=e.target.closest('[data-profile-form]');if(!form)return;e.preventDefault();await saveProfileForm(form);
 });
 document.addEventListener('click',async e=>{
+  const logFilter=e.target.closest('[data-log-filter]');if(logFilter){state.logFilter=logFilter.dataset.logFilter;return render();}
+  if(e.target.closest('[data-map-cancel]')){state.mapPicker=false;return render();}
+  if(e.target.closest('[data-map-go]')){const account=state.live[state.selected],map=document.getElementById('vp-map-select')?.value;if(!account||!map)return;notice(`Trocando ${account.name} para ${map}…`);const result=await window.vpNative.gameAction({id:account.id,action:'change-map',payload:{map}});state.mapPicker=false;notice(result.ok?`Mapa selecionado: ${result.map}`:(result.error||'Não foi possível trocar o mapa.'));return render();}
   const discovery=e.target.closest('[data-discovery]');
   if(discovery){const account=state.live[state.selected];if(!account)return;const starting=discovery.dataset.discovery==='start';const result=await (starting?window.vpNative.startDiscovery(account.id):window.vpNative.stopDiscovery(account.id));if(result.ok){state.discovery[account.id]=starting?result.runId:null;await loadCollector();}else notice(result.error);return;}
   const login=e.target.closest('[data-profile-login]');

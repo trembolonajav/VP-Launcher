@@ -19,6 +19,9 @@
 - amostras e eventos de jogo persistidos no SQLite;
 - catálogo de mapas, endpoints redigidos e Discovery Mode;
 - telas de mapas/discovery e logs operacionais.
+- Discovery aprofundado com frames WebSocket redigidos e correlação temporal UI/rede;
+- catálogo somente de nomes de storage keys, batching e retenção automática;
+- filtros técnicos de logs e seletor de mapa alimentado pelo catálogo.
 
 ## Próximas etapas
 

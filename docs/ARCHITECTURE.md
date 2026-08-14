@@ -28,6 +28,8 @@ Cada conta possui cookies, cache, IndexedDB e localStorage próprios. Credenciai
 
 SQLite é a fonte oficial para contas, perfis de rede, presets, sessões, eventos e configurações. `seed/default-accounts.json` serve somente como seed no primeiro boot. As partições existentes `persist:conta-XX` são preservadas.
 
+O Collector de rede usa exclusivamente `webContents.debugger` dentro do Electron. `Session.webRequest` não é usado: manter dois observadores para os mesmos requests duplicaria trabalho e não acrescentaria frames WebSocket. O CDP cataloga endpoints no modo normal; conteúdo redigido de frames e correlação contextual só são persistidos durante uma run explícita de Discovery.
+
 ## Vault
 
 `apps/desktop/main/security/Vault.js` criptografa cada segredo independentemente com a API assíncrona de `safeStorage`. O banco guarda BLOBs cifrados; o renderer recebe apenas status, usuário e `hasPassword`. O cofre legado é importado, validado e renomeado para `accounts.enc.migrated`, sem exclusão imediata.

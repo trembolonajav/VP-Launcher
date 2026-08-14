@@ -15,6 +15,7 @@ Launcher desktop multi-conta para PokeWG, construído com Electron e `WebContent
 - Vault assíncrono por credencial com migração segura do cofre legado.
 - Agent V2 orientado a mudanças, histórico de telemetria e eventos no SQLite;
 - catálogo de mapas/endpoints e Discovery Mode com CDP interno redigido.
+- frames WebSocket limitados/redigidos apenas durante Discovery, com escrita em lotes e retenção.
 
 As rotinas de hunt, captura e venda ainda estão em desenvolvimento. A extensão de navegador e o cliente Playwright são mantidos apenas como legado e apoio de diagnóstico.
 

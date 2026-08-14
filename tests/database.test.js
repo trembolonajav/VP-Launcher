@@ -12,10 +12,10 @@ function temporaryDatabase() { const directory = fs.mkdtempSync(path.join(os.tmp
 test("creates database, applies idempotent migrations and enforces foreign keys", () => {
   const fixture = temporaryDatabase();
   try {
-    assert.equal(fixture.database.prepare("SELECT COUNT(*) AS total FROM schema_migrations").get().total, 3);
+    assert.equal(fixture.database.prepare("SELECT COUNT(*) AS total FROM schema_migrations").get().total, 4);
     fixture.database.close();
     fixture.database = openDatabase(fixture.filename);
-    assert.equal(fixture.database.prepare("SELECT COUNT(*) AS total FROM schema_migrations").get().total, 3);
+    assert.equal(fixture.database.prepare("SELECT COUNT(*) AS total FROM schema_migrations").get().total, 4);
     assert.throws(() => fixture.database.prepare("INSERT INTO session_runs(account_id,started_at,app_version) VALUES('missing',?,?)").run(new Date().toISOString(), "test"), /FOREIGN KEY/);
   } finally { fixture.database.close(); fs.rmSync(fixture.directory, { recursive: true, force: true }); }
 });

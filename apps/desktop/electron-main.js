@@ -113,6 +113,7 @@ function closeView(id, reason = "USER_CLOSED") {
   if (!view) return;
   cdpCollector.detach(id);
   const discoveryRunId = discoveryRuns.get(id); if (discoveryRunId) { collectorRepository.stopDiscovery(discoveryRunId); discoveryRuns.delete(id); }
+  cdpCollector.stopDiscovery(id);
   viewAccountIds.delete(view.webContents.id);
   mainWindow.contentView.removeChildView(view);
   view.webContents.close();
@@ -197,8 +198,9 @@ function registerIpc() {
   ipcMain.handle("vp:events", (_event, filter) => eventRepository.list(filter));
   ipcMain.handle("vp:collector-maps", () => collectorRepository.listMaps());
   ipcMain.handle("vp:collector-endpoints", (_event, limit) => collectorRepository.listEndpoints(limit));
-  ipcMain.handle("vp:start-discovery", (_event, id) => { if (!views.has(id)) return { ok: false, error: "Abra a sessÃ£o antes de iniciar a descoberta." }; if (discoveryRuns.has(id)) return { ok: true, runId: discoveryRuns.get(id) }; const runId = collectorRepository.startDiscovery(id); discoveryRuns.set(id, runId); eventRepository.add({ accountId: id, sessionRunId: sessionRunIds.get(id), type: "DISCOVERY_STARTED", payload: { runId } }); return { ok: true, runId }; });
-  ipcMain.handle("vp:stop-discovery", (_event, id) => { const runId = discoveryRuns.get(id); if (!runId) return { ok: true }; collectorRepository.stopDiscovery(runId); discoveryRuns.delete(id); eventRepository.add({ accountId: id, sessionRunId: sessionRunIds.get(id), type: "DISCOVERY_STOPPED", payload: { runId } }); return { ok: true }; });
+  ipcMain.handle("vp:collector-observations", (_event, limit) => collectorRepository.listObservations(limit));
+  ipcMain.handle("vp:start-discovery", async (_event, id) => { if (!views.has(id)) return { ok: false, error: "Abra a sessÃ£o antes de iniciar a descoberta." }; if (discoveryRuns.has(id)) return { ok: true, runId: discoveryRuns.get(id) }; const runId = collectorRepository.startDiscovery(id); discoveryRuns.set(id, runId); await cdpCollector.startDiscovery(id, runId); eventRepository.add({ accountId: id, sessionRunId: sessionRunIds.get(id), type: "DISCOVERY_STARTED", payload: { runId } }); return { ok: true, runId }; });
+  ipcMain.handle("vp:stop-discovery", (_event, id) => { const runId = discoveryRuns.get(id); if (!runId) return { ok: true }; cdpCollector.stopDiscovery(id); collectorRepository.stopDiscovery(runId); discoveryRuns.delete(id); eventRepository.add({ accountId: id, sessionRunId: sessionRunIds.get(id), type: "DISCOVERY_STOPPED", payload: { runId } }); return { ok: true }; });
   ipcMain.handle("vp:get-setting", (_event, { key, fallback }) => settingsRepository.get(key, fallback));
   ipcMain.handle("vp:set-setting", (_event, { key, value }) => settingsRepository.set(key, value));
   ipcMain.handle("vp:update-account", (_event, update) => { const account = accountRepository.update(update); accounts = new Map(accountRepository.list().map(item => [item.id, item])); return account; });
@@ -215,7 +217,8 @@ app.whenReady().then(async () => {
   settingsRepository = new SettingsRepository(database);
   collectorRepository = new CollectorRepository(database);
   collectorCoordinator = new CollectorCoordinator(collectorRepository, eventRepository, sessionRunIds);
-  cdpCollector = new CDPCollector(collectorRepository, eventRepository);
+  cdpCollector = new CDPCollector(collectorRepository, eventRepository, id => collectorCoordinator.context(id));
+  collectorRepository.retain();
   new BootstrapService(database, accountRepository).run(config);
   const recovered = sessionRepository.recoverUnclean();
   if (recovered) eventRepository.add({ type: "UNCLEAN_SHUTDOWN_RECOVERED", severity: "WARN", payload: { sessions: recovered } });
@@ -233,4 +236,4 @@ app.whenReady().then(async () => {
   await mainWindow.loadFile(path.join(dir, "ui", "index.html"));
 });
 
-app.on("window-all-closed", () => { database?.close(); app.quit(); });
+app.on("window-all-closed", () => { collectorRepository?.close(); database?.close(); app.quit(); });
