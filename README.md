@@ -11,6 +11,8 @@ Launcher desktop multi-conta para PokeWG, construído com Electron e `WebContent
 - consulta de IP, país, provedor e sinalização de VPN por sessão;
 - modos lista, mosaico e foco;
 - troca manual de mapa pelo launcher.
+- SQLite local com migrations, sessões, eventos, rede, presets e configurações;
+- Vault assíncrono por credencial com migração segura do cofre legado.
 
 As rotinas de hunt, captura e venda ainda estão em desenvolvimento. A extensão de navegador e o cliente Playwright são mantidos apenas como legado e apoio de diagnóstico.
 
@@ -54,3 +56,5 @@ Consulte [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) para detalhes.
 ## Segurança
 
 Credenciais, perfis do navegador, relatórios e configurações locais não são versionados. Nunca adicione `accounts.enc`, `config.json`, pastas de perfil ou dumps de diagnóstico ao Git.
+
+O banco `vp-launcher.db` e os segredos ficam em `app.getPath("userData")`, fora do repositório. O renderer nunca acessa o SQLite nem recebe senhas descriptografadas.

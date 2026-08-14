@@ -66,6 +66,9 @@ const state = {
   busy: {}         // ids em transição (abrir/fechar)
   ,embedded: []
   ,profiles: []
+  ,networkProfiles: []
+  ,presets: []
+  ,events: []
 };
 
 const svg = (d, opts = {}) => {
@@ -218,8 +221,8 @@ function render() {
     { action: 'noop', label: 'Usar item', icon: I.bag },
     { action: 'restart-selected', label: 'Reiniciar sessão', icon: I.reiniciar }
   ];
-  const queue = [];
-  const activity = [];
+  const activity = state.events.filter(event=>!/^ACTION_/.test(event.type)).slice(0,80).map(event=>({time:new Date(event.occurredAt).toLocaleTimeString('pt-BR'),account:event.accountId||'sistema',text:event.type,delta:event.payload?.to||event.payload?.reason||'',color:event.severity==='WARN'||event.severity==='ERROR'?PALETTE.amber:PALETTE.green}));
+  const queue = state.events.filter(event=>/^ACTION_/.test(event.type)).slice(0,80).map(event=>({time:new Date(event.occurredAt).toLocaleTimeString('pt-BR'),account:event.accountId||'sistema',action:`${event.type} · ${event.payload?.action||''}`,state:event.type.replace('ACTION_',''),color:event.severity==='WARN'||event.severity==='ERROR'?PALETTE.amber:PALETTE.green}));
 
   const anySelected = state.checked.length > 0;
   const allBoxBg = anySelected ? PALETTE.gold : '#0b0706';
@@ -392,18 +395,23 @@ function render() {
 
 function renderProfilesPanel(){
   const profiles=state.profiles.length?state.profiles:state.live.map(a=>({id:a.id,name:a.name,configured:false,username:'',autoLogin:true}));
+  const vault=profiles[0]?.vault;
   return `<div style="position:fixed;z-index:20;left:74px;right:0;top:58px;bottom:0;background:#0a0605;overflow:auto;padding:28px;">
     <div style="max-width:1120px;margin:auto;">
       <div style="display:flex;align-items:end;justify-content:space-between;margin-bottom:22px;">
-        <div><div style="font-family:Cinzel,serif;font-size:22px;color:#e5b34f;font-weight:700;">Perfis e credenciais</div><div style="color:#8a7a70;margin-top:6px;">Cada slot usa cookies, storage e credenciais isolados. Senhas são criptografadas pelo Windows.</div></div>
+        <div><div style="font-family:Cinzel,serif;font-size:22px;color:#e5b34f;font-weight:700;">Perfis e credenciais</div><div style="color:#8a7a70;margin-top:6px;">Contas, rede, preset e credenciais persistidos localmente. Senhas nunca saem do processo principal.</div></div>
         <div style="color:#7fd9a2;font-size:11px;font-weight:700;">${profiles.filter(p=>p.configured).length}/${profiles.length} configurados</div>
       </div>
+      ${vault&&!['READY','EMPTY'].includes(vault.state)?`<div style="margin-bottom:16px;padding:12px;border:1px solid rgba(228,130,117,.5);border-radius:10px;background:#3a1714;color:#ffcabf;">Cofre: ${esc(vault.state)} · ${esc(vault.error||'criptografia indisponível')}</div>`:''}
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px;">
       ${profiles.map((p,i)=>`<form data-profile-form="${esc(p.id)}" style="border:1px solid rgba(229,179,79,.22);border-radius:14px;background:linear-gradient(180deg,#1c1310,#120c0a);padding:17px;display:flex;flex-direction:column;gap:11px;">
         <div style="display:flex;align-items:center;gap:10px;"><div style="width:30px;height:30px;border-radius:8px;display:grid;place-items:center;background:rgba(194,54,41,.15);color:#e5b34f;font-family:Cinzel,serif;font-weight:700;">${String(i+1).padStart(2,'0')}</div><div style="font-weight:800;font-size:14px;">${esc(p.name)}</div><div style="margin-left:auto;color:${p.configured?'#7fd9a2':'#e48275'};font-size:10px;font-weight:700;">${p.configured?'CONFIGURADO':'PENDENTE'}</div></div>
+        <label style="font-size:10px;color:#8a7a70;font-weight:700;letter-spacing:.08em;">NOME DO PERFIL<input name="name" value="${esc(p.name)}" style="display:block;width:100%;margin-top:5px;height:36px;border:1px solid rgba(216,138,74,.3);border-radius:8px;background:#0b0706;color:#f7eee7;padding:0 11px;"></label>
         <label style="font-size:10px;color:#8a7a70;font-weight:700;letter-spacing:.08em;">USUÁRIO / E-MAIL<input name="username" value="${esc(p.username)}" autocomplete="off" style="display:block;width:100%;margin-top:5px;height:36px;border:1px solid rgba(216,138,74,.3);border-radius:8px;background:#0b0706;color:#f7eee7;padding:0 11px;outline:none;"></label>
         <label style="font-size:10px;color:#8a7a70;font-weight:700;letter-spacing:.08em;">SENHA<input name="password" type="password" value="" placeholder="${p.configured?'deixe vazio para manter a atual':'digite a senha'}" autocomplete="new-password" style="display:block;width:100%;margin-top:5px;height:36px;border:1px solid rgba(216,138,74,.3);border-radius:8px;background:#0b0706;color:#f7eee7;padding:0 11px;outline:none;"></label>
         <label style="display:flex;align-items:center;gap:8px;color:#b5a196;font-size:11px;"><input name="autoLogin" type="checkbox" ${p.autoLogin?'checked':''}> preencher e entrar automaticamente ao abrir</label>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;"><label style="font-size:10px;color:#8a7a70;font-weight:700;">REDE<select name="networkProfileId" style="display:block;width:100%;margin-top:5px;height:34px;background:#0b0706;color:#f7eee7;border:1px solid rgba(216,138,74,.3);border-radius:8px;">${state.networkProfiles.map(n=>`<option value="${esc(n.id)}" ${n.id===p.networkProfileId?'selected':''}>${esc(n.name)}</option>`).join('')}</select></label><label style="font-size:10px;color:#8a7a70;font-weight:700;">PRESET<select name="presetId" style="display:block;width:100%;margin-top:5px;height:34px;background:#0b0706;color:#f7eee7;border:1px solid rgba(216,138,74,.3);border-radius:8px;">${state.presets.map(x=>`<option value="${esc(x.id)}" ${x.id===p.presetId?'selected':''}>${esc(x.name)}</option>`).join('')}</select></label></div>
+        <div style="font-size:10px;color:#6f5f56;">Navegador: ${esc(p.partition||`persist:${p.id}`)}</div>
         <div style="display:flex;gap:7px;margin-top:3px;"><button type="submit" class="vp-primary" style="height:32px;flex:1;border-radius:8px;border:1px solid rgba(240,200,130,.5);background:#85191b;color:#fff;font-weight:700;cursor:pointer;">Salvar</button><button type="button" data-profile-login="${esc(p.id)}" class="vp-ghost" style="height:32px;padding:0 11px;border-radius:8px;border:1px solid rgba(216,138,74,.3);background:#160f0c;color:#e5b34f;cursor:pointer;">Abrir e entrar</button>${p.configured?`<button type="button" data-profile-delete="${esc(p.id)}" style="height:32px;border-radius:8px;border:1px solid rgba(195,54,41,.4);background:transparent;color:#e48275;cursor:pointer;">×</button>`:''}</div>
       </form>`).join('')}
       </div>
@@ -627,6 +635,7 @@ const post = (url, data = {}) => request(url, { method: 'POST', headers: { 'Cont
 async function refresh() {
   try {
     const data = window.vpNative?.accounts ? {accounts:await window.vpNative.accounts(),gameUrl:'https://pokewg.com/play'} : await request('/api/status');
+    if(window.vpNative?.events)state.events=await window.vpNative.events({limit:200});
     if(window.vpNative?.accounts)state.embedded=data.accounts.map((a,i)=>a.running?i:-1).filter(i=>i>=0);
     state.live = (data.accounts || []).map((account,index)=>({...account,running:account.running||state.embedded.includes(index)}));
     state.gameUrl = data.gameUrl || '';
@@ -641,12 +650,14 @@ async function refresh() {
 
 async function loadProfiles(){
   if(!window.vpNative?.profiles){notice('Gerenciamento seguro de perfis exige o launcher Electron.');return;}
-  state.profiles=await window.vpNative.profiles();
+  [state.profiles,state.networkProfiles,state.presets]=await Promise.all([window.vpNative.profiles(),window.vpNative.networkProfiles(),window.vpNative.presets()]);
   render();
 }
-function profileFromForm(form){return{id:form.dataset.profileForm,username:form.elements.username.value,password:form.elements.password.value,autoLogin:form.elements.autoLogin.checked};}
+function profileFromForm(form){return{id:form.dataset.profileForm,name:form.elements.name.value,username:form.elements.username.value,password:form.elements.password.value,autoLogin:form.elements.autoLogin.checked,networkProfileId:form.elements.networkProfileId.value,presetId:form.elements.presetId.value};}
 async function saveProfileForm(form){
-  const result=await window.vpNative.saveProfile(profileFromForm(form));
+  const profile=profileFromForm(form);
+  await window.vpNative.updateAccount({id:profile.id,name:profile.name,networkProfileId:profile.networkProfileId,presetId:profile.presetId});
+  const result=await window.vpNative.saveProfile(profile);
   notice(result.ok?'Perfil salvo com criptografia do Windows.':result.error);
   if(result.ok)await loadProfiles();
   return result;

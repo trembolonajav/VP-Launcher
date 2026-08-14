@@ -23,3 +23,8 @@ test("game agent is independent from extension and localhost APIs", () => {
   }
   assert.match(agent, /MutationObserver/);
 });
+
+test("renderer cannot import sqlite or safeStorage", () => {
+  const renderer = fs.readFileSync("apps/desktop/ui/app.js", "utf8");
+  assert.equal(/node:sqlite|safeStorage/.test(renderer), false);
+});

@@ -8,5 +8,14 @@ contextBridge.exposeInMainWorld("vpNative", {
   profiles: () => ipcRenderer.invoke("vp:profiles"),
   saveProfile: profile => ipcRenderer.invoke("vp:save-profile", profile),
   deleteProfile: id => ipcRenderer.invoke("vp:delete-profile", id),
-  loginProfile: id => ipcRenderer.invoke("vp:login-profile", id)
+  loginProfile: id => ipcRenderer.invoke("vp:login-profile", id),
+  vaultStatus: () => ipcRenderer.invoke("vp:vault-status"),
+  networkProfiles: () => ipcRenderer.invoke("vp:network-profiles"),
+  saveNetworkProfile: profile => ipcRenderer.invoke("vp:save-network-profile", profile),
+  presets: () => ipcRenderer.invoke("vp:presets"),
+  savePreset: preset => ipcRenderer.invoke("vp:save-preset", preset),
+  events: filter => ipcRenderer.invoke("vp:events", filter),
+  getSetting: (key, fallback) => ipcRenderer.invoke("vp:get-setting", { key, fallback }),
+  setSetting: (key, value) => ipcRenderer.invoke("vp:set-setting", { key, value }),
+  updateAccount: update => ipcRenderer.invoke("vp:update-account", update)
 });

@@ -22,6 +22,16 @@ A interface é carregada diretamente de `apps/desktop/ui/index.html` com `loadFi
 
 Cada conta possui cookies, cache, IndexedDB e localStorage próprios. Credenciais são separadas pelo identificador do slot e criptografadas pelo `safeStorage` do Electron no Windows.
 
+## Persistência
+
+`apps/desktop/main/storage/` usa `node:sqlite`. O arquivo `vp-launcher.db` é criado em `app.getPath("userData")` com foreign keys, WAL, synchronous NORMAL e busy timeout. Migrations SQL são transacionais, versionadas e protegidas por checksum.
+
+SQLite é a fonte oficial para contas, perfis de rede, presets, sessões, eventos e configurações. `accounts.json` serve somente como seed no primeiro boot. As partições existentes `persist:conta-XX` são preservadas.
+
+## Vault
+
+`apps/desktop/main/security/Vault.js` criptografa cada segredo independentemente com a API assíncrona de `safeStorage`. O banco guarda BLOBs cifrados; o renderer recebe apenas status, usuário e `hasPassword`. O cofre legado é importado, validado e renomeado para `accounts.enc.migrated`, sem exclusão imediata.
+
 ## Rede
 
 O IP é consultado usando a `Session` da própria conta. Atualmente as sessões herdam a rede do sistema. Proxy por conta será aplicado futuramente com `session.setProxy`; a extensão Proton dos perfis antigos do Chrome não é carregada no Electron.

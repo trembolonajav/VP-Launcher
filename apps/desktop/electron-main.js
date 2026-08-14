@@ -2,41 +2,39 @@ import electron from "electron";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { openDatabase } from "./main/storage/Database.js";
+import { AccountRepository } from "./main/storage/AccountRepository.js";
+import { NetworkRepository } from "./main/storage/NetworkRepository.js";
+import { PresetRepository } from "./main/storage/PresetRepository.js";
+import { SessionRepository } from "./main/storage/SessionRepository.js";
+import { EventRepository } from "./main/storage/EventRepository.js";
+import { SettingsRepository } from "./main/storage/SettingsRepository.js";
+import { BootstrapService } from "./main/services/BootstrapService.js";
+import { Vault, VaultState } from "./main/security/Vault.js";
 
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const { app, BrowserWindow, WebContentsView, ipcMain, safeStorage } = electron;
 const config = JSON.parse(fs.readFileSync(path.join(dir, "accounts.json"), "utf8"));
 const gameAgentScript = fs.readFileSync(path.join(dir, "game-agent", "index.js"), "utf8");
-const accounts = new Map(config.accounts.map(account => [account.id, account]));
+let accounts = new Map();
 const views = new Map();
 const networks = new Map();
 const telemetry = new Map();
 let mainWindow;
-let credentialsFile;
+let database, accountRepository, networkRepository, presetRepository, sessionRepository, eventRepository, settingsRepository, vault;
+const sessionRunIds = new Map();
 
-function readCredentials() {
-  try {
-    if (!credentialsFile || !fs.existsSync(credentialsFile)) return {};
-    const encrypted = Buffer.from(JSON.parse(fs.readFileSync(credentialsFile, "utf8")).data, "base64");
-    return JSON.parse(safeStorage.decryptString(encrypted));
-  } catch { return {}; }
-}
-function writeCredentials(value) {
-  if (!safeStorage.isEncryptionAvailable()) throw new Error("A criptografia segura do Windows não está disponível.");
-  fs.mkdirSync(path.dirname(credentialsFile), { recursive: true });
-  const encrypted = safeStorage.encryptString(JSON.stringify(value));
-  fs.writeFileSync(credentialsFile, JSON.stringify({ version: 1, data: encrypted.toString("base64") }), { mode: 0o600 });
-}
 function profileSummaries() {
-  const saved = readCredentials();
-  return config.accounts.map(account => ({ id: account.id, name: account.name, configured: Boolean(saved[account.id]?.username && saved[account.id]?.password), username: saved[account.id]?.username || "", autoLogin: saved[account.id]?.autoLogin !== false }));
+  const credentials = new Map(vault.summaries().map(item => [item.id, item]));
+  return accountRepository.list().map(account => { const credential = credentials.get(account.credentialId); return { ...account, configured: Boolean(credential?.hasPassword), username: credential?.username || "", autoLogin: credential?.autoLogin !== false, vault: vault.status() }; });
 }
 
 async function loginAccount(id) {
   const view = views.get(id);
-  const credential = readCredentials()[id];
   if (!view) return { ok: false, error: "Abra a sessão antes de entrar." };
-  if (!credential?.username || !credential?.password) return { ok: false, error: "Credenciais não cadastradas." };
+  const account = accountRepository.get(id);
+  const credential = account?.credentialId ? await vault.secret(account.credentialId) : { state: VaultState.EMPTY };
+  if (credential.state !== VaultState.READY) return { ok: false, state: credential.state, error: credential.error || "Credenciais não cadastradas." };
   const script = `(()=>{
     const visible=e=>{const s=getComputedStyle(e),r=e.getBoundingClientRect();return s.display!=='none'&&s.visibility!=='hidden'&&r.width>0&&r.height>0};
     const inputs=[...document.querySelectorAll('input')].filter(visible);
@@ -57,23 +55,34 @@ async function inspectNetwork(id, view) {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
     if (!data.success) throw new Error(data.message || "consulta recusada");
-    networks.set(id, { ip: data.ip, country: data.country_code, city: data.city, provider: data.connection?.isp || data.connection?.org || "", vpn: Boolean(data.security?.vpn), proxy: Boolean(data.security?.proxy), checkedAt: new Date().toISOString() });
+    const previous = networks.get(id);
+    const current = { ip: data.ip, country: data.country_code, city: data.city, provider: data.connection?.isp || data.connection?.org || "", vpn: Boolean(data.security?.vpn), proxy: Boolean(data.security?.proxy), checkedAt: new Date().toISOString() };
+    networks.set(id, current);
+    if (!previous?.ip || previous.ip !== current.ip) eventRepository?.add({ accountId: id, sessionRunId: sessionRunIds.get(id), type: previous?.ip ? "NETWORK_CHANGED" : "NETWORK_CHECKED", severity: previous?.ip ? "WARN" : "INFO", payload: { ip: current.ip, country: current.country, provider: current.provider, previousIp: previous?.ip || null } });
   } catch (error) {
     networks.set(id, { error: error.message, checkedAt: new Date().toISOString() });
+    eventRepository?.add({ accountId: id, sessionRunId: sessionRunIds.get(id), type: "NETWORK_CHECK_FAILED", severity: "WARN", payload: { error: error.message } });
   }
 }
 
 async function collectTelemetry(id, view) {
   try {
     const snapshot = await view.webContents.executeJavaScript("window.__vpAgent?.snapshot || null");
-    if (snapshot) telemetry.set(id, snapshot);
+    if (snapshot) {
+      const previous = telemetry.get(id);
+      telemetry.set(id, snapshot);
+      if (snapshot.ready && !previous?.ready) eventRepository.add({ accountId: id, sessionRunId: sessionRunIds.get(id), type: "GAME_READY", payload: { player: snapshot.parsed?.player?.name || null } });
+      const from = previous?.parsed?.activity?.location, to = snapshot.parsed?.activity?.location;
+      if (from && to && from !== to) eventRepository.add({ accountId: id, sessionRunId: sessionRunIds.get(id), type: "MAP_CHANGED", payload: { from, to } });
+    }
   } catch {}
 }
 
 function createView(id) {
   if (views.has(id)) return views.get(id);
-  if (!accounts.has(id)) throw new Error(`Conta desconhecida: ${id}`);
-  const view = new WebContentsView({ webPreferences: { partition: `persist:${id}`, backgroundThrottling: false, contextIsolation: true, sandbox: true } });
+  const account = accounts.get(id);
+  if (!account) throw new Error(`Conta desconhecida: ${id}`);
+  const view = new WebContentsView({ webPreferences: { partition: account.partition, backgroundThrottling: false, contextIsolation: true, sandbox: true } });
   view.setBackgroundColor("#050303");
   view.setVisible(false);
   mainWindow.contentView.addChildView(view);
@@ -90,19 +99,23 @@ function createView(id) {
       await view.webContents.executeJavaScript(`localStorage.setItem("vpclient:account", ${JSON.stringify(id)});`).catch(() => {});
       await view.webContents.executeJavaScript(gameAgentScript).catch(() => {});
     }
-    const credential = readCredentials()[id];
-    if (credential?.autoLogin !== false) setTimeout(() => void loginAccount(id), 700);
+    const currentAccount = accountRepository.get(id);
+    const credential = currentAccount?.credentialId ? vault.summaries().find(item => item.id === currentAccount.credentialId) : null;
+    if (credential && credential.autoLogin !== false) setTimeout(() => void loginAccount(id), 700);
   });
   view.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https:\/\/(?:[^/]+\.)?pokewg\.com\//i.test(url)) void view.webContents.loadURL(url);
     return { action: "deny" };
   });
-  void view.webContents.loadURL(`${config.gameUrl}?vpclient_account=${encodeURIComponent(id)}`);
+  const sessionRunId = sessionRepository.start(id);
+  sessionRunIds.set(id, sessionRunId);
+  eventRepository.add({ accountId: id, sessionRunId, type: "SESSION_STARTED" });
+  void view.webContents.loadURL(`${account.gameUrl}?vpclient_account=${encodeURIComponent(id)}`);
   void inspectNetwork(id, view);
   return view;
 }
 
-function closeView(id) {
+function closeView(id, reason = "USER_CLOSED") {
   const view = views.get(id);
   if (!view) return;
   mainWindow.contentView.removeChildView(view);
@@ -110,6 +123,12 @@ function closeView(id) {
   views.delete(id);
   networks.delete(id);
   telemetry.delete(id);
+  const sessionRunId = sessionRunIds.get(id);
+  if (sessionRunId) {
+    sessionRepository.end(sessionRunId, reason);
+    eventRepository.add({ accountId: id, sessionRunId, type: "SESSION_CLOSED", payload: { reason } });
+    sessionRunIds.delete(id);
+  }
 }
 
 async function runGameAction(id, action, payload = {}) {
@@ -132,12 +151,15 @@ async function runGameAction(id, action, payload = {}) {
     if(!option){const available=controls().map(e=>clean(e.innerText||e.textContent)).filter(t=>/\\bNv\\s*\\d+/i.test(t)).slice(0,30);return{ok:false,error:'Mapa não encontrado.',available}}
     const selected=clean(option.innerText||option.textContent);option.click();await pause(1200);return{ok:true,map:selected};
   })().catch(error=>({ok:false,error:error.message}))`;
-  return view.webContents.executeJavaScript(script);
+  eventRepository.add({ accountId: id, sessionRunId: sessionRunIds.get(id), type: "ACTION_STARTED", payload: { action, target } });
+  const result = await view.webContents.executeJavaScript(script);
+  eventRepository.add({ accountId: id, sessionRunId: sessionRunIds.get(id), type: result.ok ? "ACTION_SUCCESS" : "ACTION_FAILED", severity: result.ok ? "INFO" : "WARN", payload: { action, target, result } });
+  return result;
 }
 
 function registerIpc() {
   ipcMain.handle("vp:accounts", async () => {
-    return config.accounts.map(account => ({ ...account, running: views.has(account.id), url: views.get(account.id)?.webContents.getURL() || null, telemetry: telemetry.get(account.id) || null, network: networks.get(account.id) || null }));
+    return accountRepository.list().map(account => ({ ...account, running: views.has(account.id), url: views.get(account.id)?.webContents.getURL() || null, telemetry: telemetry.get(account.id) || null, network: networks.get(account.id) || null }));
   });
   ipcMain.handle("vp:open-embedded", (_event, id) => { try { createView(id); return { ok: true }; } catch (error) { return { ok: false, error: error.message }; } });
   ipcMain.handle("vp:layout-embedded", (_event, layouts = []) => {
@@ -159,23 +181,48 @@ function registerIpc() {
   ipcMain.handle("vp:close-embedded", (_event, id) => { closeView(id); return { ok: true }; });
   ipcMain.handle("vp:game-action", (_event, { id, action, payload }) => runGameAction(id, action, payload));
   ipcMain.handle("vp:profiles", () => profileSummaries());
-  ipcMain.handle("vp:save-profile", (_event, profile) => {
+  ipcMain.handle("vp:save-profile", async (_event, profile) => {
     if (!accounts.has(profile.id)) return { ok: false, error: "Conta inválida." };
     const username = String(profile.username || "").trim();
-    const current = readCredentials();
-    const password = String(profile.password || "") || current[profile.id]?.password || "";
-    if (!username || !password) return { ok: false, error: "Preencha usuário e senha." };
-    current[profile.id] = { username, password, autoLogin: profile.autoLogin !== false, updatedAt: new Date().toISOString() };
-    try { writeCredentials(current); return { ok: true }; } catch (error) { return { ok: false, error: error.message }; }
+    if (!username) return { ok: false, error: "Preencha o usuário." };
+    const credentialId = accountRepository.get(profile.id).credentialId || `poke:${profile.id}`;
+    try {
+      const result = await vault.save({ id: credentialId, provider: "pokewg", username, password: String(profile.password || ""), autoLogin: profile.autoLogin !== false });
+      if (result.ok) { accountRepository.attachCredential(profile.id, credentialId); accounts = new Map(accountRepository.list().map(account => [account.id, account])); eventRepository.add({ accountId: profile.id, type: "CREDENTIAL_SAVED" }); }
+      return result;
+    } catch (error) { return { ok: false, state: VaultState.TEMPORARILY_UNAVAILABLE, error: error.message }; }
   });
-  ipcMain.handle("vp:delete-profile", (_event, id) => { const current = readCredentials(); delete current[id]; try { writeCredentials(current); return { ok: true }; } catch (error) { return { ok: false, error: error.message }; } });
+  ipcMain.handle("vp:delete-profile", (_event, id) => { const account = accountRepository.get(id); if (!account?.credentialId) return { ok: true }; const result = vault.remove(account.credentialId); accountRepository.attachCredential(id, null); accounts = new Map(accountRepository.list().map(item => [item.id, item])); eventRepository.add({ accountId: id, type: "CREDENTIAL_REMOVED" }); return result; });
   ipcMain.handle("vp:login-profile", (_event, id) => loginAccount(id));
+  ipcMain.handle("vp:vault-status", () => vault.status());
+  ipcMain.handle("vp:network-profiles", () => networkRepository.list());
+  ipcMain.handle("vp:save-network-profile", (_event, profile) => networkRepository.save(profile));
+  ipcMain.handle("vp:presets", () => presetRepository.list());
+  ipcMain.handle("vp:save-preset", (_event, preset) => presetRepository.save(preset));
+  ipcMain.handle("vp:events", (_event, filter) => eventRepository.list(filter));
+  ipcMain.handle("vp:get-setting", (_event, { key, fallback }) => settingsRepository.get(key, fallback));
+  ipcMain.handle("vp:set-setting", (_event, { key, value }) => settingsRepository.set(key, value));
+  ipcMain.handle("vp:update-account", (_event, update) => { const account = accountRepository.update(update); accounts = new Map(accountRepository.list().map(item => [item.id, item])); return account; });
 }
 
 app.whenReady().then(async () => {
-  credentialsFile = path.join(app.getPath("userData"), "accounts.enc");
+  const userData = app.getPath("userData");
+  database = openDatabase(path.join(userData, "vp-launcher.db"));
+  accountRepository = new AccountRepository(database);
+  networkRepository = new NetworkRepository(database);
+  presetRepository = new PresetRepository(database);
+  sessionRepository = new SessionRepository(database, app.getVersion());
+  eventRepository = new EventRepository(database);
+  settingsRepository = new SettingsRepository(database);
+  new BootstrapService(database, accountRepository).run(config);
+  const recovered = sessionRepository.recoverUnclean();
+  if (recovered) eventRepository.add({ type: "UNCLEAN_SHUTDOWN_RECOVERED", severity: "WARN", payload: { sessions: recovered } });
+  vault = new Vault(database, safeStorage, path.join(userData, "accounts.enc"));
+  await vault.initialize();
+  accounts = new Map(accountRepository.list().map(account => [account.id, account]));
   mainWindow = new BrowserWindow({ width: 1500, height: 920, minWidth: 1100, minHeight: 700, backgroundColor: "#0a0605", title: "VP Launcher", webPreferences: { preload: path.join(dir, "electron-preload.cjs"), contextIsolation: true, sandbox: true, backgroundThrottling: false } });
   mainWindow.setMenuBarVisibility(false);
+  mainWindow.on("close", () => { for (const id of [...views.keys()]) closeView(id, "APP_EXIT"); });
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   mainWindow.webContents.on("will-navigate", (event, url) => { if (!url.startsWith("file://")) event.preventDefault(); });
   registerIpc();
@@ -184,4 +231,4 @@ app.whenReady().then(async () => {
   await mainWindow.loadFile(path.join(dir, "ui", "index.html"));
 });
 
-app.on("window-all-closed", () => { for (const id of [...views.keys()]) closeView(id); app.quit(); });
+app.on("window-all-closed", () => { database?.close(); app.quit(); });

@@ -1,0 +1,5 @@
+export class EventRepository {
+  constructor(database) { this.database = database; }
+  add({ accountId = null, sessionRunId = null, type, severity = "INFO", payload = {} }) { const result = this.database.prepare("INSERT INTO events(account_id,session_run_id,occurred_at,type,severity,payload_json) VALUES(?,?,?,?,?,?)").run(accountId, sessionRunId, new Date().toISOString(), type, severity, JSON.stringify(payload)); return Number(result.lastInsertRowid); }
+  list({ accountId = null, limit = 200 } = {}) { const safeLimit = Math.max(1, Math.min(1000, Number(limit) || 200)); const rows = accountId ? this.database.prepare("SELECT * FROM events WHERE account_id=? ORDER BY id DESC LIMIT ?").all(accountId, safeLimit) : this.database.prepare("SELECT * FROM events ORDER BY id DESC LIMIT ?").all(safeLimit); return rows.map(row => ({ id: Number(row.id), accountId: row.account_id, sessionRunId: row.session_run_id == null ? null : Number(row.session_run_id), occurredAt: row.occurred_at, type: row.type, severity: row.severity, payload: JSON.parse(row.payload_json) })); }
+}

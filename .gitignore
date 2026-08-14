@@ -18,6 +18,9 @@ apps/desktop/logs/
 config.json
 accounts.enc
 **/accounts.enc
+*.db
+*.db-shm
+*.db-wal
 
 # Generated diagnostics and reports
 reports/
