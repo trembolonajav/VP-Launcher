@@ -94,7 +94,8 @@ function accountVM(i) {
   const pokemon = telemetry?.pokemon || parsed.activePokemon || null;
   const activity = telemetry?.game || parsed.activity || {};
   const off = !liveRunning;
-  const paused = false;
+  const sessionState=live?.session?.state || (liveRunning?'STARTING':'CLOSED');
+  const paused = sessionState==='PAUSED';
   const on = liveRunning && !state.autoOff.includes(i);
   const isSel = state.selected === i;
   const isChecked = state.checked.includes(i);
@@ -105,7 +106,7 @@ function accountVM(i) {
     name: live ? live.name : 'Conta ' + String(i + 1).padStart(2, '0'),
     profile: player?.name || (liveRunning ? 'lendo dados do jogo' : '—'),
     map: telemetry?.location?.current || activity.location || '—',
-    statusLabel: off ? 'offline' : telemetry ? 'online' : 'aguardando dados',
+    statusLabel: sessionState==='WAITING_USER'?'INTERVENÇÃO NECESSÁRIA':sessionState==='ERROR'?'erro':sessionState==='HUNTING'?'caçando':sessionState==='READY'?'pronto':sessionState==='AUTHENTICATING'?'autenticando':sessionState==='AUTH_CHECK'?'verificando acesso':sessionState==='NETWORK_CHECK'?'verificando rede':sessionState==='RECOVERING'?'recuperando':sessionState==='PAUSED'?'pausado':sessionState==='STARTING'?'iniciando':'offline',
     statusColor: off ? PALETTE.red : paused ? PALETTE.amber : PALETTE.green,
     statusBg: off ? 'rgba(195,54,41,.12)' : paused ? 'rgba(229,179,79,.1)' : 'rgba(37,211,102,.1)',
     statusBorder: off ? 'rgba(216,80,60,.4)' : paused ? 'rgba(229,179,79,.35)' : 'rgba(56,216,120,.34)',
@@ -115,7 +116,7 @@ function accountVM(i) {
     ballsColor: '#6f5f56',
     metricColor: off ? '#6f5f56' : PALETTE.cream,
     goldColor: off ? '#6f5f56' : PALETTE.gold,
-    rule: off ? 'Sessão encerrada' : activity.hunting ? 'Caçando' : activity.inCity ? 'Na cidade' : 'Monitorando',
+    rule: off ? 'Sessão encerrada' : sessionState==='WAITING_USER'?'Focar janela para continuar':sessionState==='ERROR'?(live?.session?.error?.message||'Erro na sessão'):sessionState==='HUNTING'?'Caçando':sessionState==='PAUSED'?'Sessão viva · rotinas suspensas':'Monitorando',
     ruleColor: on ? '#b5a196' : '#7d6d64',
     switchBg: on ? 'rgba(37,211,102,.24)' : '#0b0706',
     switchBorder: on ? 'rgba(56,216,120,.5)' : 'rgba(216,138,74,.28)',
@@ -223,7 +224,7 @@ function render() {
   ];
   const focusActions = [
     { action: 'hide-selected', label: 'Ocultar navegador', icon: I.ver },
-    { action: 'noop', label: 'Pausar rotina', icon: I.pause },
+    { action: 'toggle-pause', label: 'Pausar/retomar sessão', icon: I.pause },
     { action: 'change-map', label: 'Trocar mapa', icon: I.mapa },
     { action: 'noop', label: 'Capturar agora', icon: I.captura },
     { action: 'noop', label: 'Vender loot', icon: I.vender },
@@ -686,11 +687,11 @@ async function syncEmbeddedViews(){
 }
 
 async function openIndexes(indexes) {
-  for(const i of indexes){const id=state.live[i]?.id;if(!id)continue;const result=await window.vpNative.openEmbedded(id);if(result.ok){if(!state.embedded.includes(i))state.embedded.push(i);state.live[i].running=true;}else notice(result.error);}
+  for(const i of indexes){const id=state.live[i]?.id;if(!id)continue;const result=await window.vpNative.openEmbedded(id);if(result.ok){if(!state.embedded.includes(i))state.embedded.push(i);state.live[i].running=true;state.live[i].session=result.session;}else notice(result.error);}
   render();
 }
 async function closeIndexes(indexes) {
-  for(const i of indexes){const id=state.live[i]?.id;if(id){await window.vpNative.closeEmbedded(id);state.embedded=state.embedded.filter(x=>x!==i);state.live[i].running=false;state.live[i].telemetry=null;}}
+  for(const i of indexes){const id=state.live[i]?.id;if(id){const result=await window.vpNative.closeEmbedded(id);state.embedded=state.embedded.filter(x=>x!==i);state.live[i].running=false;state.live[i].session=result.session;state.live[i].telemetry=null;}}
   render();
 }
 
@@ -702,8 +703,8 @@ async function handleAction(action) {
       return openIndexes(state.checked.length ? state.checked : state.live.filter(a => a.enabled !== false).map((_, k) => k));
     case 'bulk-close':
       return closeIndexes(state.checked.length ? state.checked : allIdx);
-    case 'bulk-pause':
-      return; // sem backend de automação — decorativo
+    case 'bulk-pause': { const targets=state.checked.length?state.checked:state.live.map((_,k)=>k).filter(k=>state.live[k]?.running);for(const index of targets){const account=state.live[index];if(!account?.running)continue;const paused=account.session?.state==='PAUSED';const result=await (paused?window.vpNative.resumeSession(account.id):window.vpNative.pauseSession(account.id));if(result.ok)account.session=result.session;}render();return; }
+    case 'toggle-pause': { const account=state.live[i];if(!account?.running)return;const paused=account.session?.state==='PAUSED';const result=await (paused?window.vpNative.resumeSession(account.id):window.vpNative.pauseSession(account.id));if(result.ok)account.session=result.session;render();return; }
     case 'focus-selected':
       state.view='focus';render();if(!state.live[i]?.running)return openIndexes([i]);return;
     case 'close-selected':

@@ -5,6 +5,8 @@ contextBridge.exposeInMainWorld("vpNative", {
   layoutEmbedded: layouts => ipcRenderer.invoke("vp:layout-embedded", layouts),
   closeEmbedded: id => ipcRenderer.invoke("vp:close-embedded", id),
   reloadEmbedded: id => ipcRenderer.invoke("vp:reload-embedded", id),
+  pauseSession: id => ipcRenderer.invoke("vp:pause-session",id),
+  resumeSession: id => ipcRenderer.invoke("vp:resume-session",id),
   gameAction: payload => ipcRenderer.invoke("vp:game-action", payload),
   profiles: () => ipcRenderer.invoke("vp:profiles"),
   saveProfile: profile => ipcRenderer.invoke("vp:save-profile", profile),

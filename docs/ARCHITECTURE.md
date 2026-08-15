@@ -6,6 +6,14 @@
 
 O processo principal controla sessões, posicionamento dos navegadores, credenciais criptografadas, login assistido, telemetria, diagnóstico de IP e comandos do jogo.
 
+## Session Manager
+
+Cada conta possui exatamente uma `AccountSession`, controlada pelo `SessionManager` no processo principal. Os estados oficiais são `CLOSED`, `STARTING`, `NETWORK_CHECK`, `AUTH_CHECK`, `AUTHENTICATING`, `READY`, `HUNTING`, `PAUSED`, `ACTION_RUNNING`, `WAITING_USER`, `RECOVERING` e `ERROR`. Transições inválidas são rejeitadas e sinais repetidos são idempotentes.
+
+O preflight de rede do P3 informa `OK`, `FAILED` ou `UNKNOWN`; proxy e Proton continuam reservados ao P4. Autenticação é confirmada por sinais observáveis do Agent, e não pelo clique de login. CAPTCHA, Cloudflare, 2FA e telas inesperadas levam a `WAITING_USER`, sem tentativa de contorno.
+
+Reload, perda de heartbeat, falha de navegação e queda do renderer levam a recovery limitado. Cada abertura incrementa uma geração lógica; mensagens de uma View ou geração antiga são ignoradas. Toda transição real produz `SESSION_STATE_CHANGED` e utiliza o mesmo `session_run` até o fechamento.
+
 ## Renderer
 
 `apps/desktop/ui/` contém somente a interface. Operações privilegiadas passam pela API limitada exposta por `electron-preload.cjs`. Senhas salvas nunca são devolvidas ao renderer.

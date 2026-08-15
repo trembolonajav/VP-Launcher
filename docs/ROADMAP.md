@@ -29,8 +29,9 @@ P2 Collector/Discovery está **CONCLUÍDO**. O candidato final passou por reload
 
 ## Próximas etapas
 
-1. P3 — Session Manager e máquina de estados;
-2. P4 — aplicar proxy/Proton e IP esperado por perfil, com bloqueio preventivo;
-3. P5 — Action Engine e fila persistente;
-4. P6 — automação, métricas confiáveis e rotinas assistidas;
-5. empacotamento e atualizações.
+1. P4 — aplicar proxy/Proton e IP esperado por perfil, com bloqueio preventivo;
+2. P5 — Action Engine e fila persistente;
+3. P6 — automação, métricas confiáveis e rotinas assistidas;
+4. empacotamento e atualizações.
+
+P3 Session Manager está **CONCLUÍDO**. O estado operacional pertence ao Main; lifecycle, auth observável, pausa, recovery limitado, isolamento e `session_runs` foram validados com reload, restart, duas contas simultâneas e shutdown normal, sem avançar P4/P5/P6.

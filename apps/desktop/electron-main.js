@@ -16,13 +16,15 @@ import { CollectorCoordinator } from "./main/collector/CollectorCoordinator.js";
 import { CDPCollector } from "./main/collector/CDPCollector.js";
 import { validateAgentMessage } from "./main/collector/BridgeProtocol.js";
 import { CollectorHealth } from "./main/collector/CollectorHealth.js";
+import { SessionManager } from "./main/session/SessionManager.js";
 
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const { app, BrowserWindow, WebContentsView, ipcMain, safeStorage, session } = electron;
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) app.quit();
 const config = JSON.parse(fs.readFileSync(path.join(dir, "seed", "default-accounts.json"), "utf8"));
-const autostartAccount = process.argv.find(value => value.startsWith("--autostart-account="))?.split("=").slice(1).join("=") || null;
+const autostartAccounts = (process.argv.find(value => value.startsWith("--autostart-account="))?.split("=").slice(1).join("=") || "").split(",").map(value=>value.trim()).filter(Boolean);
+const autostartAccount=autostartAccounts[0]||null;
 const p2Validation = process.argv.includes("--p2-validation");
 const p2Soak = process.argv.includes("--p2-soak");
 const exitAfterMs = Number(process.argv.find(value => value.startsWith("--exit-after-ms="))?.split("=")[1] || 0);
@@ -33,9 +35,10 @@ const preparedPartitions = new Set();
 const networks = new Map();
 const agentStatuses = new Map();
 let mainWindow;
-let database, accountRepository, networkRepository, presetRepository, sessionRepository, eventRepository, settingsRepository, collectorRepository, collectorCoordinator, collectorHealth, cdpCollector, vault;
+let database, accountRepository, networkRepository, presetRepository, sessionRepository, eventRepository, settingsRepository, collectorRepository, collectorCoordinator, collectorHealth, cdpCollector, sessionManager, vault;
 const sessionRunIds = new Map();
 const discoveryRuns = new Map();
+const recoveryAttemptsAt = new Map();
 function pushAccountPatch(accountId, patch) { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("vp:state-changed",{ accountId,patch }); }
 
 function profileSummaries() {
@@ -60,7 +63,10 @@ async function loginAccount(id) {
     const button=[...document.querySelectorAll('button,[role=button],input[type=submit]')].filter(visible).find(e=>/entrar|login|sign in|acessar/i.test((e.innerText||e.value||e.textContent||'').trim()));
     if(!button)return{ok:false,error:'Botão de login não encontrado; campos foram preenchidos.'};button.click();return{ok:true};
   })()`;
-  return view.webContents.executeJavaScript(script).catch(error => ({ ok: false, error: error.message }));
+  const result=await view.webContents.executeJavaScript(script).catch(error => ({ ok:false,error:error.message }));
+  if (result.ok) sessionManager.auth(id,"LOGIN_REQUIRED");
+  if (!result.ok && /challenge|captcha|2fa|confirma|verifica/i.test(result.error||"")) sessionManager.auth(id,"CHALLENGE");
+  return result;
 }
 
 async function inspectNetwork(id, view) {
@@ -74,14 +80,16 @@ async function inspectNetwork(id, view) {
     networks.set(id, current);
     pushAccountPatch(id,{ network:current });
     if (!previous?.ip || previous.ip !== current.ip) eventRepository?.add({ accountId: id, sessionRunId: sessionRunIds.get(id), type: previous?.ip ? "NETWORK_CHANGED" : "NETWORK_CHECKED", severity: previous?.ip ? "WARN" : "INFO", payload: { ip: current.ip, country: current.country, provider: current.provider, previousIp: previous?.ip || null } });
+    sessionManager.network(id,"OK"); const known=collectorCoordinator.state(id);if(known)sessionManager.game(id,{ ready:known.ready,hunting:Boolean(known.game?.hunting),disconnected:Boolean(known.game?.disconnected) },sessionManager.snapshot(id).generation);
   } catch (error) {
     networks.set(id, { error: error.message, checkedAt: new Date().toISOString() });
     pushAccountPatch(id,{ network:networks.get(id) });
     eventRepository?.add({ accountId: id, sessionRunId: sessionRunIds.get(id), type: "NETWORK_CHECK_FAILED", severity: "WARN", payload: { error: error.message } });
+    sessionManager.network(id,"UNKNOWN");
   }
 }
 
-function createView(id) {
+function createView(id,generation) {
   if (views.has(id)) return views.get(id);
   const account = accounts.get(id);
   if (!account) throw new Error(`Conta desconhecida: ${id}`);
@@ -93,6 +101,7 @@ function createView(id) {
   mainWindow.contentView.addChildView(view);
   views.set(id, view);
   viewAccountIds.set(view.webContents.id, id);
+  view.webContents.__vpGeneration=generation;
   collectorHealth.patch(id,{ viewAlive:true,collectorActive:true,sessionRunId:null });
   gameSession.setPermissionCheckHandler(() => false);
   gameSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
@@ -103,25 +112,26 @@ function createView(id) {
     if (!/^https:\/\/(?:test\.)?pokewg\.com\//i.test(view.webContents.getURL())) return;
     if (/\/play/i.test(view.webContents.getURL())) {
       await view.webContents.executeJavaScript(`localStorage.setItem("vpclient:account", ${JSON.stringify(id)});`).catch(() => {});
+    } else if (/login|auth|entrar/i.test(view.webContents.getURL())) {
+      sessionManager.auth(id,"LOGIN_REQUIRED");
     }
     const currentAccount = accountRepository.get(id);
     const credential = currentAccount?.credentialId ? vault.summaries().find(item => item.id === currentAccount.credentialId) : null;
     if (credential && credential.autoLogin !== false) setTimeout(() => void loginAccount(id), 700);
   });
+  view.webContents.on("render-process-gone",(_event,details)=>{if(views.get(id)!==view)return;const state=sessionManager.recover(id,`renderer-${details.reason}`);if(state.state==="RECOVERING"&&state.retryCount<=3)setTimeout(()=>{if(views.get(id)===view&&!view.webContents.isDestroyed())view.webContents.reload();},Math.min(5000,state.retryCount*1000));});
+  view.webContents.on("did-fail-load",(_event,code,description,url,isMainFrame)=>{if(isMainFrame&&views.get(id)===view)sessionManager.recover(id,`load-failed-${code}:${description}`);});
   view.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https:\/\/(?:[^/]+\.)?pokewg\.com\//i.test(url)) void view.webContents.loadURL(url);
     return { action: "deny" };
   });
-  const sessionRunId = sessionRepository.start(id);
-  sessionRunIds.set(id, sessionRunId);
-  eventRepository.add({ accountId: id, sessionRunId, type: "SESSION_STARTED" });
   void cdpCollector.attach(id, view.webContents);
   void view.webContents.loadURL(`${account.gameUrl}?vpclient_account=${encodeURIComponent(id)}`);
   void inspectNetwork(id, view);
   return view;
 }
 
-function closeView(id, reason = "USER_CLOSED") {
+function closeViewResources(id) {
   const view = views.get(id);
   if (!view) return;
   cdpCollector.detach(id);
@@ -134,14 +144,11 @@ function closeView(id, reason = "USER_CLOSED") {
   views.delete(id);
   networks.delete(id);
   agentStatuses.delete(id);
-  const sessionRunId = sessionRunIds.get(id);
-  if (sessionRunId) {
-    sessionRepository.end(sessionRunId, reason);
-    eventRepository.add({ accountId: id, sessionRunId, type: "SESSION_CLOSED", payload: { reason } });
-    sessionRunIds.delete(id);
-  }
   collectorHealth.remove(id);
 }
+
+async function openAccount(id) { const result=await sessionManager.open(id,generation=>{sessionRunIds.set(id,sessionManager.snapshot(id).sessionRunId);createView(id,generation);});return result; }
+async function closeAccount(id,reason="USER_CLOSED") { const result=await sessionManager.close(id,reason,()=>closeViewResources(id));sessionRunIds.delete(id);return result; }
 
 async function startDiscoveryFor(id) {
   if (!views.has(id)) return { ok:false,error:"Abra a sessão antes de iniciar a descoberta." };
@@ -180,16 +187,18 @@ async function runGameAction(id, action, payload = {}) {
     const selected=clean(option.innerText||option.textContent);option.click();await pause(1200);return{ok:true,map:selected};
   })().catch(error=>({ok:false,error:error.message}))`;
   eventRepository.add({ accountId: id, sessionRunId: sessionRunIds.get(id), type: "ACTION_STARTED", payload: { action, target } });
-  const result = await view.webContents.executeJavaScript(script);
+  sessionManager.beginAction(id,`manual-${action}`);
+  const result = await view.webContents.executeJavaScript(script).catch(error=>({ ok:false,error:error.message }));
   eventRepository.add({ accountId: id, sessionRunId: sessionRunIds.get(id), type: result.ok ? "ACTION_SUCCESS" : "ACTION_FAILED", severity: result.ok ? "INFO" : "WARN", payload: { action, target, result } });
+  sessionManager.finishAction(id,result.ok?`manual-${action}-finished`:`manual-${action}-failed`);
   return result;
 }
 
 function registerIpc() {
   ipcMain.handle("vp:accounts", async () => {
-    return accountRepository.list().map(account => ({ ...account, running: views.has(account.id), url: views.get(account.id)?.webContents.getURL() || null, telemetry: collectorCoordinator.state(account.id), agentStatus: agentStatuses.get(account.id) || null, network: networks.get(account.id) || null }));
+    return accountRepository.list().map(account => ({ ...account, running: sessionManager.snapshot(account.id).state!=="CLOSED",session:sessionManager.snapshot(account.id), url: views.get(account.id)?.webContents.getURL() || null, telemetry: collectorCoordinator.state(account.id), agentStatus: agentStatuses.get(account.id) || null, network: networks.get(account.id) || null }));
   });
-  ipcMain.handle("vp:open-embedded", (_event, id) => { try { createView(id); return { ok: true }; } catch (error) { return { ok: false, error: error.message }; } });
+  ipcMain.handle("vp:open-embedded", async (_event,id) => { try{return{ ok:true,session:await openAccount(id) };}catch(error){return{ ok:false,error:error.message };} });
   ipcMain.handle("vp:layout-embedded", (_event, layouts = []) => {
     const visibleIds = new Set();
     for (const item of layouts) {
@@ -206,8 +215,10 @@ function registerIpc() {
     for (const [id, view] of views) if (!visibleIds.has(id)) view.setVisible(false);
     return { ok: true };
   });
-  ipcMain.handle("vp:close-embedded", (_event, id) => { closeView(id); return { ok: true }; });
-  ipcMain.handle("vp:reload-embedded", (_event,id) => { const view=views.get(id);if(!view)return{ ok:false,error:"Sessão não está aberta." };view.webContents.reload();return{ ok:true }; });
+  ipcMain.handle("vp:close-embedded", async (_event,id) => ({ ok:true,session:await closeAccount(id) }));
+  ipcMain.handle("vp:reload-embedded", (_event,id) => { const view=views.get(id);if(!view)return{ ok:false,error:"Sessão não está aberta." };sessionManager.recover(id,"manual-reload");view.webContents.reload();return{ ok:true }; });
+  ipcMain.handle("vp:pause-session",(_event,id)=>({ ok:true,session:sessionManager.pause(id) }));
+  ipcMain.handle("vp:resume-session",(_event,id)=>({ ok:true,session:sessionManager.resume(id) }));
   ipcMain.handle("vp:game-action", (_event, { id, action, payload }) => runGameAction(id, action, payload));
   ipcMain.handle("vp:profiles", () => profileSummaries());
   ipcMain.handle("vp:save-profile", async (_event, profile) => {
@@ -254,6 +265,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   settingsRepository = new SettingsRepository(database);
   collectorRepository = new CollectorRepository(database, error => eventRepository.add({ type: "COLLECTOR_FLUSH_FAILED", severity: "ERROR", payload: { error: error.message } }));
   collectorHealth = new CollectorHealth(collectorRepository);
+  sessionManager = new SessionManager({ sessionRepository,eventRepository,publish:pushAccountPatch,maxRecoveryRetries:3 });
   collectorCoordinator = new CollectorCoordinator(collectorRepository, eventRepository, sessionRunIds);
   cdpCollector = new CDPCollector(collectorRepository,eventRepository,id=>collectorCoordinator.context(id),collectorHealth);
   collectorRepository.retain();
@@ -265,19 +277,20 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   accounts = new Map(accountRepository.list().map(account => [account.id, account]));
   mainWindow = new BrowserWindow({ width: 1500, height: 920, minWidth: 1100, minHeight: 700, backgroundColor: "#0a0605", title: "VP Launcher", webPreferences: { preload: path.join(dir, "electron-preload.cjs"), contextIsolation: true, sandbox: true, backgroundThrottling: false } });
   mainWindow.setMenuBarVisibility(false);
-  mainWindow.on("close", () => { for (const id of [...views.keys()]) closeView(id, "APP_EXIT"); });
+  let shutdownStarted=false;mainWindow.on("close",event=>{if(shutdownStarted)return;event.preventDefault();shutdownStarted=true;Promise.all([...views.keys()].map(id=>closeAccount(id,"APP_EXIT"))).finally(()=>mainWindow.destroy());});
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   mainWindow.webContents.on("will-navigate", (event, url) => { if (!url.startsWith("file://")) event.preventDefault(); });
   registerIpc();
-  ipcMain.on("vp:agent-message", (event,message) => { const id=viewAccountIds.get(event.sender.id),url=event.senderFrame?.url||event.sender.getURL(); if (!id || !/^https:\/\/(?:[^/]+\.)?pokewg\.com\//i.test(url)) return; const prior=collectorHealth.get(id,sessionRunIds.get(id)||null),validated=validateAgentMessage(message,id,prior.sequence,prior.agentInstanceId); if (!validated.ok) { collectorHealth.patch(id,{ lastError:`Bridge rejected: ${validated.error}` }); eventRepository.add({ accountId:id,sessionRunId:sessionRunIds.get(id),type:"AGENT_MESSAGE_REJECTED",severity:"WARN",payload:{ reason:validated.error } }); return; } const now=new Date().toISOString(); collectorHealth.patch(id,{ bridgeConnected:true,lastAgentMessageAt:now,sequence:message.sequence,agentInstanceId:message.instanceId,lastError:null }); if (message.type==="STATUS") { const ready=message.payload.state==="READY",status={ state:ready?"READY":"ERROR",error:message.payload.error||null,at:message.timestamp,agentVersion:message.payload.agentVersion||null },changed=prior.agentInstanceId!==message.instanceId||prior.agentInstalled!==ready||Boolean(prior.lastError)!==Boolean(status.error); agentStatuses.set(id,status);collectorHealth.patch(id,{ agentInstalled:ready,agentVersion:status.agentVersion,lastError:status.error });if(changed)eventRepository.add({ accountId:id,sessionRunId:sessionRunIds.get(id),type:ready?"GAME_AGENT_READY":"GAME_AGENT_ERROR",severity:ready?"INFO":"ERROR",payload:{ error:status.error,agentVersion:status.agentVersion } });pushAccountPatch(id,{ agentStatus:status,health:collectorHealth.get(id,sessionRunIds.get(id)||null) }); } else if (message.type==="ACTION") collectorCoordinator.recordUiAction(id,message.payload.label); else if (message.type==="DELTA") { const result=collectorCoordinator.ingest(id,message.payload,message.timestamp); if (result) { collectorHealth.patch(id,{ lastDeltaAt:now,lastPersistAt:collectorRepository.status().lastPersistAt }); pushAccountPatch(id,{ telemetry:result.current,agentStatus:agentStatuses.get(id)||null,health:collectorHealth.get(id,sessionRunIds.get(id)||null) }); } } });
+  ipcMain.on("vp:agent-message", (event,message) => { const id=viewAccountIds.get(event.sender.id),url=event.senderFrame?.url||event.sender.getURL(),view=views.get(id); if (!id||!view||view.webContents!==event.sender || !/^https:\/\/(?:[^/]+\.)?pokewg\.com\//i.test(url)) return; const prior=collectorHealth.get(id,sessionRunIds.get(id)||null),validated=validateAgentMessage(message,id,prior.sequence,prior.agentInstanceId); if (!validated.ok) { collectorHealth.patch(id,{ lastError:`Bridge rejected: ${validated.error}` }); eventRepository.add({ accountId:id,sessionRunId:sessionRunIds.get(id),type:"AGENT_MESSAGE_REJECTED",severity:"WARN",payload:{ reason:validated.error } }); return; } const now=new Date().toISOString(); collectorHealth.patch(id,{ bridgeConnected:true,lastAgentMessageAt:now,sequence:message.sequence,agentInstanceId:message.instanceId,lastError:null }); if (message.type==="STATUS") { const ready=message.payload.state==="READY",status={ state:ready?"READY":"ERROR",error:message.payload.error||null,at:message.timestamp,agentVersion:message.payload.agentVersion||null },changed=prior.agentInstanceId!==message.instanceId||prior.agentInstalled!==ready||Boolean(prior.lastError)!==Boolean(status.error); agentStatuses.set(id,status);collectorHealth.patch(id,{ agentInstalled:ready,agentVersion:status.agentVersion,lastError:status.error });if(changed)eventRepository.add({ accountId:id,sessionRunId:sessionRunIds.get(id),type:ready?"GAME_AGENT_READY":"GAME_AGENT_ERROR",severity:ready?"INFO":"ERROR",payload:{ error:status.error,agentVersion:status.agentVersion } });if(!ready)sessionManager.fail(id,"AGENT_ERROR",status.error||"Game Agent failed",true);pushAccountPatch(id,{ agentStatus:status,health:collectorHealth.get(id,sessionRunIds.get(id)||null),session:sessionManager.snapshot(id) }); } else if (message.type==="ACTION") collectorCoordinator.recordUiAction(id,message.payload.label); else if (message.type==="DELTA") { const result=collectorCoordinator.ingest(id,message.payload,message.timestamp); if (result) { collectorHealth.patch(id,{ lastDeltaAt:now,lastPersistAt:collectorRepository.status().lastPersistAt });if(result.current.ui?.auth?.challenge)sessionManager.auth(id,"CHALLENGE");else if(result.current.ui?.auth?.loginRequired)sessionManager.auth(id,"LOGIN_REQUIRED");sessionManager.game(id,{ ready:result.current.ready,hunting:Boolean(result.current.game?.hunting),disconnected:Boolean(result.current.game?.disconnected) },view.webContents.__vpGeneration); pushAccountPatch(id,{ telemetry:result.current,agentStatus:agentStatuses.get(id)||null,health:collectorHealth.get(id,sessionRunIds.get(id)||null),session:sessionManager.snapshot(id) }); } } });
   setInterval(() => { for (const [id, view] of views) void inspectNetwork(id, view); }, 60000).unref();
+  setInterval(()=>{const now=Date.now();for(const [id,view] of views){const state=sessionManager.snapshot(id);if(["CLOSED","ERROR","WAITING_USER"].includes(state.state))continue;const health=collectorHealth.get(id,state.sessionRunId),reference=Date.parse(health.lastAgentMessageAt||state.changedAt);if(now-reference<45000)continue;const prior=recoveryAttemptsAt.get(id)||0;if(now-prior<20000)continue;recoveryAttemptsAt.set(id,now);const recovering=sessionManager.recover(id,"agent-heartbeat-timeout");if(recovering.state==="RECOVERING"&&!view.webContents.isDestroyed())view.webContents.reload();}},5000).unref();
   await mainWindow.loadFile(path.join(dir, "ui", "index.html"));
   if (autostartAccount) {
-    createView(autostartAccount);
+    for(const id of autostartAccounts)void openAccount(id);
     if (p2Validation) {
-      setTimeout(() => views.get(autostartAccount)?.webContents.reload(),15000);
-      setTimeout(() => closeView(autostartAccount,"P2_REOPEN_TEST"),30000);
-      setTimeout(() => createView(autostartAccount),33000);
+      setTimeout(() => { const view=views.get(autostartAccount);if(view){sessionManager.recover(autostartAccount,"validation-reload");view.webContents.reload();} },15000);
+      setTimeout(() => void closeAccount(autostartAccount,"SESSION_RESTARTED"),30000);
+      setTimeout(() => void openAccount(autostartAccount),33000);
       setTimeout(() => void startDiscoveryFor(autostartAccount),50000);
       setTimeout(() => stopDiscoveryFor(autostartAccount),170000);
     }
