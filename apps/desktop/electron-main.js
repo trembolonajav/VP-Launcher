@@ -31,6 +31,8 @@ const p2Soak = process.argv.includes("--p2-soak");
 const exitAfterMs = Number(process.argv.find(value => value.startsWith("--exit-after-ms="))?.split("=")[1] || 0);
 let accounts = new Map();
 const views = new Map();
+const protonViews = new Map();
+const protonStatuses = new Map();
 const viewAccountIds = new Map();
 const preparedPartitions = new Set();
 const networks = new Map();
@@ -127,6 +129,22 @@ function closeViewResources(id) {
   collectorHealth.remove(id);
 }
 
+function openProtonSetup(id) {
+  if (protonViews.has(id)) return { ok:true,status:protonStatuses.get(id)||null };
+  const account=accounts.get(id);if(!account)return{ok:false,error:"Conta invÃ¡lida."};
+  const protonSession=session.fromPartition(`persist:proton-${id}`);
+  const view=new WebContentsView({webPreferences:{partition:`persist:proton-${id}`,contextIsolation:true,sandbox:true,backgroundThrottling:false}});
+  view.setBackgroundColor("#f7f5ff");view.setVisible(false);mainWindow.contentView.addChildView(view);protonViews.set(id,view);
+  const allowed=url=>{try{const host=new URL(url).hostname;return host==="proton.me"||host.endsWith(".proton.me")||host==="protonvpn.com"||host.endsWith(".protonvpn.com");}catch{return false;}};
+  view.webContents.on("will-navigate",(event,url)=>{if(!allowed(url))event.preventDefault();});
+  view.webContents.setWindowOpenHandler(({url})=>{if(allowed(url))void view.webContents.loadURL(url);return{action:"deny"};});
+  protonSession.setPermissionCheckHandler(()=>false);protonSession.setPermissionRequestHandler((_wc,_permission,callback)=>callback(false));
+  const onDownload=(_event,item)=>{if(!/\.conf$/i.test(item.getFilename())){item.cancel();return;}const secretDir=path.join(app.getPath("userData"),"network-secrets");fs.mkdirSync(secretDir,{recursive:true});const temporary=path.join(secretDir,`proton-${id}.download`),encrypted=path.join(secretDir,`proton-${id}.wg.enc`);item.setSavePath(temporary);item.once("done",async(_e,state)=>{let finalState="DOWNLOAD_FAILED";try{if(state==="completed"){const plaintext=fs.readFileSync(temporary,"utf8"),blob=await safeStorage.encryptStringAsync(plaintext);fs.writeFileSync(encrypted,blob);finalState="CONFIG_READY";}}catch{finalState="ENCRYPTION_FAILED";}finally{if(fs.existsSync(temporary))fs.unlinkSync(temporary);}const status={state:finalState,at:new Date().toISOString()};protonStatuses.set(id,status);pushAccountPatch(id,{protonSetup:status});eventRepository.add({accountId:id,type:finalState==="CONFIG_READY"?"PROTON_CONFIG_READY":"PROTON_CONFIG_DOWNLOAD_FAILED",severity:finalState==="CONFIG_READY"?"INFO":"ERROR",payload:{state:finalState}});});};
+  protonSession.on("will-download",onDownload);view.webContents.once("destroyed",()=>protonSession.removeListener("will-download",onDownload));
+  void view.webContents.loadURL("https://account.protonvpn.com/downloads#wireguard-configuration");return{ok:true,status:null};
+}
+function closeProtonSetup(id){const view=protonViews.get(id);if(!view)return{ok:true};mainWindow.contentView.removeChildView(view);view.webContents.close();protonViews.delete(id);return{ok:true};}
+
 async function prepareAccountNetwork(id,profileId) { const account=accounts.get(id),gameSession=session.fromPartition(account.partition),network=await networkManager.prepare({accountId:id,profileId:profileId||account.networkProfileId||"network:system",ses:gameSession,sessionRunId:sessionRunIds.get(id)});networks.set(id,network);return network; }
 async function openAccount(id) { return sessionManager.open(id,async generation=>{sessionRunIds.set(id,sessionManager.snapshot(id).sessionRunId);const network=await prepareAccountNetwork(id);sessionManager.network(id,network.result);if(network.result.status!=="OK")return;createView(id,generation);}); }
 async function reconfigureAccountNetwork(id,profileId,{reconnect=false}={}) { const account=accounts.get(id);if(!account)return{ok:false,error:"Conta invÃ¡lida."};const state=sessionManager.snapshot(id);if(state.state==="CLOSED"){const network=await prepareAccountNetwork(id,profileId);return{ok:network.result.status==="OK",network};}const checking=sessionManager.beginNetworkCheck(id,reconnect?"network-reconnect":"network-profile-change");if(checking.state!=="NETWORK_CHECK")return{ok:false,error:"Encerre e reabra a sessÃ£o para trocar a rede neste estado."};closeViewResources(id);if(reconnect){const capability=await networkManager.reconnect(id);if(!capability.ok){sessionManager.network(id,{status:"CONFIG_ERROR",error:capability.error});return{ok:false,error:capability.error};}}const network=await prepareAccountNetwork(id,profileId);sessionManager.network(id,network.result);if(network.result.status==="OK")createView(id,sessionManager.snapshot(id).generation);return{ok:network.result.status==="OK",network,error:network.result.error}; }
@@ -178,7 +196,7 @@ async function runGameAction(id, action, payload = {}) {
 
 function registerIpc() {
   ipcMain.handle("vp:accounts", async () => {
-    return accountRepository.list().map(account => ({ ...account, running: sessionManager.snapshot(account.id).state!=="CLOSED",session:sessionManager.snapshot(account.id), url: views.get(account.id)?.webContents.getURL() || null, telemetry: collectorCoordinator.state(account.id), agentStatus: agentStatuses.get(account.id) || null, network: networks.get(account.id) || null }));
+    return accountRepository.list().map(account => ({ ...account, running: sessionManager.snapshot(account.id).state!=="CLOSED",session:sessionManager.snapshot(account.id), url: views.get(account.id)?.webContents.getURL() || null, telemetry: collectorCoordinator.state(account.id), agentStatus: agentStatuses.get(account.id) || null, network: networks.get(account.id) || null,protonSetup:protonStatuses.get(account.id)||null }));
   });
   ipcMain.handle("vp:open-embedded", async (_event,id) => { try{return{ ok:true,session:await openAccount(id) };}catch(error){return{ ok:false,error:error.message };} });
   ipcMain.handle("vp:layout-embedded", (_event, layouts = []) => {
@@ -197,6 +215,9 @@ function registerIpc() {
     for (const [id, view] of views) if (!visibleIds.has(id)) view.setVisible(false);
     return { ok: true };
   });
+  ipcMain.handle("vp:open-proton-setup",(_event,id)=>openProtonSetup(id));
+  ipcMain.handle("vp:layout-proton-setup",(_event,{id,bounds,visible})=>{for(const[accountId,view]of protonViews){const show=accountId===id&&Boolean(visible&&bounds);view.setVisible(show);if(show)view.setBounds({x:Math.round(bounds.x),y:Math.round(bounds.y),width:Math.max(1,Math.round(bounds.width)),height:Math.max(1,Math.round(bounds.height))});}return{ok:true};});
+  ipcMain.handle("vp:close-proton-setup",(_event,id)=>closeProtonSetup(id));
   ipcMain.handle("vp:close-embedded", async (_event,id) => ({ ok:true,session:await closeAccount(id) }));
   ipcMain.handle("vp:reload-embedded", (_event,id) => { const view=views.get(id);if(!view)return{ ok:false,error:"Sessão não está aberta." };sessionManager.recover(id,"manual-reload");view.webContents.reload();return{ ok:true }; });
   ipcMain.handle("vp:pause-session",(_event,id)=>({ ok:true,session:sessionManager.pause(id) }));
@@ -263,7 +284,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   accounts = new Map(accountRepository.list().map(account => [account.id, account]));
   mainWindow = new BrowserWindow({ width: 1500, height: 920, minWidth: 1100, minHeight: 700, backgroundColor: "#0a0605", title: "VP Launcher", webPreferences: { preload: path.join(dir, "electron-preload.cjs"), contextIsolation: true, sandbox: true, backgroundThrottling: false } });
   mainWindow.setMenuBarVisibility(false);
-  let shutdownStarted=false;mainWindow.on("close",event=>{if(shutdownStarted)return;event.preventDefault();shutdownStarted=true;Promise.all([...views.keys()].map(id=>closeAccount(id,"APP_EXIT"))).finally(()=>mainWindow.destroy());});
+  let shutdownStarted=false;mainWindow.on("close",event=>{if(shutdownStarted)return;event.preventDefault();shutdownStarted=true;for(const id of [...protonViews.keys()])closeProtonSetup(id);Promise.all([...views.keys()].map(id=>closeAccount(id,"APP_EXIT"))).finally(()=>mainWindow.destroy());});
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   mainWindow.webContents.on("will-navigate", (event, url) => { if (!url.startsWith("file://")) event.preventDefault(); });
   registerIpc();
