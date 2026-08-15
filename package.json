@@ -13,7 +13,8 @@
     "check": "node --check apps/desktop/electron-main.js && node --check apps/desktop/game-agent/preload.cjs && node --check apps/desktop/game-agent/readers/state-readers.cjs && node --check apps/desktop/game-agent/readers/ui-reader.cjs && node --check apps/desktop/game-agent/state/delta.cjs && node --check apps/desktop/ui/app.js && node --check legacy/playwright/index.js && node --check legacy/playwright/diagnostics.js",
     "test": "node --test tests/*.test.js",
     "build": "npm run check",
-    "test:electron": "set ELECTRON_RUN_AS_NODE=&& electron tests/electron-smoke.cjs"
+    "test:electron": "set ELECTRON_RUN_AS_NODE=&& electron tests/electron-smoke.cjs",
+    "test:network:electron": "set ELECTRON_RUN_AS_NODE=&& electron tests/electron-network-validation.cjs"
   },
   "devDependencies": {
     "electron": "^43.4.0",
