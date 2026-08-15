@@ -282,6 +282,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   vault = new Vault(database, safeStorage, path.join(userData, "accounts.enc"));
   await vault.initialize();
   accounts = new Map(accountRepository.list().map(account => [account.id, account]));
+  for(const id of accounts.keys()){const encryptedConfig=path.join(userData,"network-secrets",`proton-${id}.wg.enc`);if(fs.existsSync(encryptedConfig))protonStatuses.set(id,{state:"CONFIG_READY",at:fs.statSync(encryptedConfig).mtime.toISOString()});}
   mainWindow = new BrowserWindow({ width: 1500, height: 920, minWidth: 1100, minHeight: 700, backgroundColor: "#0a0605", title: "VP Launcher", webPreferences: { preload: path.join(dir, "electron-preload.cjs"), contextIsolation: true, sandbox: true, backgroundThrottling: false } });
   mainWindow.setMenuBarVisibility(false);
   let shutdownStarted=false;mainWindow.on("close",event=>{if(shutdownStarted)return;event.preventDefault();shutdownStarted=true;for(const id of [...protonViews.keys()])closeProtonSetup(id);Promise.all([...views.keys()].map(id=>closeAccount(id,"APP_EXIT"))).finally(()=>mainWindow.destroy());});
