@@ -35,3 +35,10 @@ test("collector uses preload deltas instead of page polling injection", () => {
   assert.match(main, /vp:agent-delta/);
   assert.equal(/collectTelemetry|gameAgentScript/.test(main), false);
 });
+
+test("sandboxed game preload is self-contained and reports startup status", () => {
+  const preload = fs.readFileSync("apps/desktop/game-agent/preload.cjs", "utf8");
+  assert.equal(/require\(["']\.\//.test(preload), false);
+  assert.match(preload, /vp:agent-status/);
+  assert.match(main, /GAME_AGENT_READY/);
+});

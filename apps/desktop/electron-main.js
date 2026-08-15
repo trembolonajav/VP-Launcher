@@ -23,6 +23,7 @@ const views = new Map();
 const viewAccountIds = new Map();
 const preparedPartitions = new Set();
 const networks = new Map();
+const agentStatuses = new Map();
 let mainWindow;
 let database, accountRepository, networkRepository, presetRepository, sessionRepository, eventRepository, settingsRepository, collectorRepository, collectorCoordinator, cdpCollector, vault;
 const sessionRunIds = new Map();
@@ -119,6 +120,7 @@ function closeView(id, reason = "USER_CLOSED") {
   view.webContents.close();
   views.delete(id);
   networks.delete(id);
+  agentStatuses.delete(id);
   const sessionRunId = sessionRunIds.get(id);
   if (sessionRunId) {
     sessionRepository.end(sessionRunId, reason);
@@ -155,7 +157,7 @@ async function runGameAction(id, action, payload = {}) {
 
 function registerIpc() {
   ipcMain.handle("vp:accounts", async () => {
-    return accountRepository.list().map(account => ({ ...account, running: views.has(account.id), url: views.get(account.id)?.webContents.getURL() || null, telemetry: collectorCoordinator.state(account.id), network: networks.get(account.id) || null }));
+    return accountRepository.list().map(account => ({ ...account, running: views.has(account.id), url: views.get(account.id)?.webContents.getURL() || null, telemetry: collectorCoordinator.state(account.id), agentStatus: agentStatuses.get(account.id) || null, network: networks.get(account.id) || null }));
   });
   ipcMain.handle("vp:open-embedded", (_event, id) => { try { createView(id); return { ok: true }; } catch (error) { return { ok: false, error: error.message }; } });
   ipcMain.handle("vp:layout-embedded", (_event, layouts = []) => {
@@ -234,6 +236,7 @@ app.whenReady().then(async () => {
   registerIpc();
   ipcMain.on("vp:agent-delta", (event, payload) => { const id = viewAccountIds.get(event.sender.id); if (!id || !/^https:\/\/(?:[^/]+\.)?pokewg\.com\//i.test(event.senderFrame?.url || event.sender.getURL())) return; collectorCoordinator.ingest(id, payload); });
   ipcMain.on("vp:agent-action", (event, payload) => { const id = viewAccountIds.get(event.sender.id); if (!id || !/^https:\/\/(?:[^/]+\.)?pokewg\.com\//i.test(event.senderFrame?.url || event.sender.getURL())) return; collectorCoordinator.recordUiAction(id, payload?.label); });
+  ipcMain.on("vp:agent-status", (event, payload) => { const id = viewAccountIds.get(event.sender.id); if (!id || !/^https:\/\/(?:[^/]+\.)?pokewg\.com\//i.test(event.senderFrame?.url || event.sender.getURL())) return; const status = { state: payload?.state === "READY" ? "READY" : "ERROR", error: payload?.error || null, at: payload?.at || new Date().toISOString() }; agentStatuses.set(id,status); eventRepository.add({ accountId:id,sessionRunId:sessionRunIds.get(id),type:status.state === "READY" ? "GAME_AGENT_READY" : "GAME_AGENT_ERROR",severity:status.state === "READY" ? "INFO" : "ERROR",payload:{ error:status.error } }); });
   setInterval(() => { for (const [id, view] of views) void inspectNetwork(id, view); }, 60000).unref();
   await mainWindow.loadFile(path.join(dir, "ui", "index.html"));
 });
