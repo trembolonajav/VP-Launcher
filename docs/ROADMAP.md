@@ -29,7 +29,7 @@ P2 Collector/Discovery está **CONCLUÍDO**. O candidato final passou por reload
 
 ## Próximas etapas
 
-1. P4 — aplicar proxy/Proton e IP esperado por perfil, com bloqueio preventivo;
+1. P4 — validar em ambiente real dois proxies externos distintos; arquitetura, providers, preflight, bloqueio preventivo e isolamento controlado implementados;
 2. P5 — Action Engine e fila persistente;
 3. P6 — automação, métricas confiáveis e rotinas assistidas;
 4. empacotamento e atualizações.

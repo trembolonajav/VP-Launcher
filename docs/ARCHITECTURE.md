@@ -48,7 +48,11 @@ O fechamento do P2 foi validado em 15/08/2026 com uma sessão real de 30 minutos
 
 ## Rede
 
-O IP é consultado usando a `Session` da própria conta. Atualmente as sessões herdam a rede do sistema. Proxy por conta será aplicado futuramente com `session.setProxy`; a extensão Proton dos perfis antigos do Chrome não é carregada no Electron.
+`NetworkManager` resolve `DIRECT`, `SYSTEM`, `PROXY` ou o adapter reservado `PROTON` sem acoplar a máquina de estados a fornecedores. Cada provider opera exclusivamente sobre a `Session` Electron da partition da conta, aplica `setProxy`, fecha conexões antigas e limpa o resolver antes do preflight. O PokeWG só é carregado depois de resultado `OK`; falha, timeout, configuração inválida e mismatch não fazem fallback para Direct.
+
+O preflight tenta `ipwho.is` e depois `api.ipify.org`, observa IP, país, região, provedor e latência e aplica `expectedIp`, `expectedIpPrefix` e `expectedCountry`. A troca de perfil passa novamente por `NETWORK_CHECK`, invalida a geração anterior, encerra a View e reabre somente após aprovação.
+
+Proxy sem autenticação suporta HTTP, HTTPS, SOCKS4 e SOCKS5 conforme `session.setProxy`. Segredos fornecidos na UI são gravados no Vault e nunca entram em `config_json`; o uso de proxy autenticado permanece fail-closed enquanto não houver preflight autenticado confiável. No Windows, o cliente oficial do Proton altera a VPN do sistema e não expõe saídas independentes por Electron Session; portanto `ProtonProvider` é `BLOCKED_BY_PROVIDER_LIMITATION`, sem automação frágil da interface ou falsa separação por conta.
 
 ## Legado
 

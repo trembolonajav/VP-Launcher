@@ -17,6 +17,7 @@ import { CDPCollector } from "./main/collector/CDPCollector.js";
 import { validateAgentMessage } from "./main/collector/BridgeProtocol.js";
 import { CollectorHealth } from "./main/collector/CollectorHealth.js";
 import { SessionManager } from "./main/session/SessionManager.js";
+import { NetworkManager } from "./main/network/NetworkManager.js";
 
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const { app, BrowserWindow, WebContentsView, ipcMain, safeStorage, session } = electron;
@@ -35,7 +36,7 @@ const preparedPartitions = new Set();
 const networks = new Map();
 const agentStatuses = new Map();
 let mainWindow;
-let database, accountRepository, networkRepository, presetRepository, sessionRepository, eventRepository, settingsRepository, collectorRepository, collectorCoordinator, collectorHealth, cdpCollector, sessionManager, vault;
+let database, accountRepository, networkRepository, presetRepository, sessionRepository, eventRepository, settingsRepository, collectorRepository, collectorCoordinator, collectorHealth, cdpCollector, sessionManager, networkManager, vault;
 const sessionRunIds = new Map();
 const discoveryRuns = new Map();
 const recoveryAttemptsAt = new Map();
@@ -67,26 +68,6 @@ async function loginAccount(id) {
   if (result.ok) sessionManager.auth(id,"LOGIN_REQUIRED");
   if (!result.ok && /challenge|captcha|2fa|confirma|verifica/i.test(result.error||"")) sessionManager.auth(id,"CHALLENGE");
   return result;
-}
-
-async function inspectNetwork(id, view) {
-  try {
-    const response = await view.webContents.session.fetch("https://ipwho.is/");
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = await response.json();
-    if (!data.success) throw new Error(data.message || "consulta recusada");
-    const previous = networks.get(id);
-    const current = { ip: data.ip, country: data.country_code, city: data.city, provider: data.connection?.isp || data.connection?.org || "", vpn: Boolean(data.security?.vpn), proxy: Boolean(data.security?.proxy), checkedAt: new Date().toISOString() };
-    networks.set(id, current);
-    pushAccountPatch(id,{ network:current });
-    if (!previous?.ip || previous.ip !== current.ip) eventRepository?.add({ accountId: id, sessionRunId: sessionRunIds.get(id), type: previous?.ip ? "NETWORK_CHANGED" : "NETWORK_CHECKED", severity: previous?.ip ? "WARN" : "INFO", payload: { ip: current.ip, country: current.country, provider: current.provider, previousIp: previous?.ip || null } });
-    sessionManager.network(id,"OK"); const known=collectorCoordinator.state(id);if(known)sessionManager.game(id,{ ready:known.ready,hunting:Boolean(known.game?.hunting),disconnected:Boolean(known.game?.disconnected) },sessionManager.snapshot(id).generation);
-  } catch (error) {
-    networks.set(id, { error: error.message, checkedAt: new Date().toISOString() });
-    pushAccountPatch(id,{ network:networks.get(id) });
-    eventRepository?.add({ accountId: id, sessionRunId: sessionRunIds.get(id), type: "NETWORK_CHECK_FAILED", severity: "WARN", payload: { error: error.message } });
-    sessionManager.network(id,"UNKNOWN");
-  }
 }
 
 function createView(id,generation) {
@@ -127,7 +108,6 @@ function createView(id,generation) {
   });
   void cdpCollector.attach(id, view.webContents);
   void view.webContents.loadURL(`${account.gameUrl}?vpclient_account=${encodeURIComponent(id)}`);
-  void inspectNetwork(id, view);
   return view;
 }
 
@@ -147,7 +127,9 @@ function closeViewResources(id) {
   collectorHealth.remove(id);
 }
 
-async function openAccount(id) { const result=await sessionManager.open(id,generation=>{sessionRunIds.set(id,sessionManager.snapshot(id).sessionRunId);createView(id,generation);});return result; }
+async function prepareAccountNetwork(id,profileId) { const account=accounts.get(id),gameSession=session.fromPartition(account.partition),network=await networkManager.prepare({accountId:id,profileId:profileId||account.networkProfileId||"network:system",ses:gameSession,sessionRunId:sessionRunIds.get(id)});networks.set(id,network);return network; }
+async function openAccount(id) { return sessionManager.open(id,async generation=>{sessionRunIds.set(id,sessionManager.snapshot(id).sessionRunId);const network=await prepareAccountNetwork(id);sessionManager.network(id,network.result);if(network.result.status!=="OK")return;createView(id,generation);}); }
+async function reconfigureAccountNetwork(id,profileId,{reconnect=false}={}) { const account=accounts.get(id);if(!account)return{ok:false,error:"Conta invÃ¡lida."};const state=sessionManager.snapshot(id);if(state.state==="CLOSED"){const network=await prepareAccountNetwork(id,profileId);return{ok:network.result.status==="OK",network};}const checking=sessionManager.beginNetworkCheck(id,reconnect?"network-reconnect":"network-profile-change");if(checking.state!=="NETWORK_CHECK")return{ok:false,error:"Encerre e reabra a sessÃ£o para trocar a rede neste estado."};closeViewResources(id);if(reconnect){const capability=await networkManager.reconnect(id);if(!capability.ok){sessionManager.network(id,{status:"CONFIG_ERROR",error:capability.error});return{ok:false,error:capability.error};}}const network=await prepareAccountNetwork(id,profileId);sessionManager.network(id,network.result);if(network.result.status==="OK")createView(id,sessionManager.snapshot(id).generation);return{ok:network.result.status==="OK",network,error:network.result.error}; }
 async function closeAccount(id,reason="USER_CLOSED") { const result=await sessionManager.close(id,reason,()=>closeViewResources(id));sessionRunIds.delete(id);return result; }
 
 async function startDiscoveryFor(id) {
@@ -236,7 +218,10 @@ function registerIpc() {
   ipcMain.handle("vp:login-profile", (_event, id) => loginAccount(id));
   ipcMain.handle("vp:vault-status", () => vault.status());
   ipcMain.handle("vp:network-profiles", () => networkRepository.list());
-  ipcMain.handle("vp:save-network-profile", (_event, profile) => networkRepository.save(profile));
+  ipcMain.handle("vp:save-network-profile", async (_event, profile) => { const safe={...profile,config:{...(profile.config||{})}};delete safe.config.username;delete safe.config.password;if(profile.password||profile.username){const credentialId=profile.credentialId||`proxy:${profile.id}`,saved=await vault.save({id:credentialId,provider:"proxy",username:String(profile.username||""),password:String(profile.password||""),autoLogin:true});if(!saved.ok)return saved;safe.credentialId=credentialId;}return{ok:true,profile:networkRepository.save(safe)}; });
+  ipcMain.handle("vp:test-network", async (_event,id) => { const account=accounts.get(id);if(!account)return{ok:false,error:"Conta invÃ¡lida."};const network=await prepareAccountNetwork(id);return{ok:network.result.status==="OK",network}; });
+  ipcMain.handle("vp:reconnect-network", (_event,id) => reconfigureAccountNetwork(id,accounts.get(id)?.networkProfileId,{reconnect:true}));
+  ipcMain.handle("vp:change-network-profile", async (_event,{id,profileId}) => { const profile=networkRepository.list().find(item=>item.id===profileId);if(!profile)return{ok:false,error:"Perfil de rede invÃ¡lido."};accountRepository.update({id,networkProfileId:profileId});accounts=new Map(accountRepository.list().map(item=>[item.id,item]));eventRepository.add({accountId:id,sessionRunId:sessionRunIds.get(id),type:"NETWORK_PROFILE_CHANGED",payload:{profileId}});return reconfigureAccountNetwork(id,profileId); });
   ipcMain.handle("vp:presets", () => presetRepository.list());
   ipcMain.handle("vp:save-preset", (_event, preset) => presetRepository.save(preset));
   ipcMain.handle("vp:events", (_event, filter) => eventRepository.list(filter));
@@ -266,6 +251,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   collectorRepository = new CollectorRepository(database, error => eventRepository.add({ type: "COLLECTOR_FLUSH_FAILED", severity: "ERROR", payload: { error: error.message } }));
   collectorHealth = new CollectorHealth(collectorRepository);
   sessionManager = new SessionManager({ sessionRepository,eventRepository,publish:pushAccountPatch,maxRecoveryRetries:3 });
+  networkManager = new NetworkManager({ repository:networkRepository,events:eventRepository,publish:pushAccountPatch,credentialResolver:id=>vault.secret(id) });
   collectorCoordinator = new CollectorCoordinator(collectorRepository, eventRepository, sessionRunIds);
   cdpCollector = new CDPCollector(collectorRepository,eventRepository,id=>collectorCoordinator.context(id),collectorHealth);
   collectorRepository.retain();
@@ -282,7 +268,6 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   mainWindow.webContents.on("will-navigate", (event, url) => { if (!url.startsWith("file://")) event.preventDefault(); });
   registerIpc();
   ipcMain.on("vp:agent-message", (event,message) => { const id=viewAccountIds.get(event.sender.id),url=event.senderFrame?.url||event.sender.getURL(),view=views.get(id); if (!id||!view||view.webContents!==event.sender || !/^https:\/\/(?:[^/]+\.)?pokewg\.com\//i.test(url)) return; const prior=collectorHealth.get(id,sessionRunIds.get(id)||null),validated=validateAgentMessage(message,id,prior.sequence,prior.agentInstanceId); if (!validated.ok) { collectorHealth.patch(id,{ lastError:`Bridge rejected: ${validated.error}` }); eventRepository.add({ accountId:id,sessionRunId:sessionRunIds.get(id),type:"AGENT_MESSAGE_REJECTED",severity:"WARN",payload:{ reason:validated.error } }); return; } const now=new Date().toISOString(); collectorHealth.patch(id,{ bridgeConnected:true,lastAgentMessageAt:now,sequence:message.sequence,agentInstanceId:message.instanceId,lastError:null }); if (message.type==="STATUS") { const ready=message.payload.state==="READY",status={ state:ready?"READY":"ERROR",error:message.payload.error||null,at:message.timestamp,agentVersion:message.payload.agentVersion||null },changed=prior.agentInstanceId!==message.instanceId||prior.agentInstalled!==ready||Boolean(prior.lastError)!==Boolean(status.error); agentStatuses.set(id,status);collectorHealth.patch(id,{ agentInstalled:ready,agentVersion:status.agentVersion,lastError:status.error });if(changed)eventRepository.add({ accountId:id,sessionRunId:sessionRunIds.get(id),type:ready?"GAME_AGENT_READY":"GAME_AGENT_ERROR",severity:ready?"INFO":"ERROR",payload:{ error:status.error,agentVersion:status.agentVersion } });if(!ready)sessionManager.fail(id,"AGENT_ERROR",status.error||"Game Agent failed",true);pushAccountPatch(id,{ agentStatus:status,health:collectorHealth.get(id,sessionRunIds.get(id)||null),session:sessionManager.snapshot(id) }); } else if (message.type==="ACTION") collectorCoordinator.recordUiAction(id,message.payload.label); else if (message.type==="DELTA") { const result=collectorCoordinator.ingest(id,message.payload,message.timestamp); if (result) { collectorHealth.patch(id,{ lastDeltaAt:now,lastPersistAt:collectorRepository.status().lastPersistAt });if(result.current.ui?.auth?.challenge)sessionManager.auth(id,"CHALLENGE");else if(result.current.ui?.auth?.loginRequired)sessionManager.auth(id,"LOGIN_REQUIRED");sessionManager.game(id,{ ready:result.current.ready,hunting:Boolean(result.current.game?.hunting),disconnected:Boolean(result.current.game?.disconnected) },view.webContents.__vpGeneration); pushAccountPatch(id,{ telemetry:result.current,agentStatus:agentStatuses.get(id)||null,health:collectorHealth.get(id,sessionRunIds.get(id)||null),session:sessionManager.snapshot(id) }); } } });
-  setInterval(() => { for (const [id, view] of views) void inspectNetwork(id, view); }, 60000).unref();
   setInterval(()=>{const now=Date.now();for(const [id,view] of views){const state=sessionManager.snapshot(id);if(["CLOSED","ERROR","WAITING_USER"].includes(state.state))continue;const health=collectorHealth.get(id,state.sessionRunId),reference=Date.parse(health.lastAgentMessageAt||state.changedAt);if(now-reference<45000)continue;const prior=recoveryAttemptsAt.get(id)||0;if(now-prior<20000)continue;recoveryAttemptsAt.set(id,now);const recovering=sessionManager.recover(id,"agent-heartbeat-timeout");if(recovering.state==="RECOVERING"&&!view.webContents.isDestroyed())view.webContents.reload();}},5000).unref();
   await mainWindow.loadFile(path.join(dir, "ui", "index.html"));
   if (autostartAccount) {
