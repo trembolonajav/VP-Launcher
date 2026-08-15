@@ -9,7 +9,7 @@ export class NetworkManager {
   resolve(profile) {
     if(!profile||profile.enabled===false)throw new Error("Network profile unavailable");
     if(profile.type==="DIRECT")return new DirectProvider();if(profile.type==="SYSTEM")return new SystemProvider();
-    if(profile.type==="PROXY")return new ProxyProvider(profile);if(profile.type==="PROTON")return new ProtonProvider();
+    if(profile.type==="PROXY")return new ProxyProvider(profile);if(profile.type==="PROTON")return new ProtonProvider(profile);
     throw new Error(`Unknown network provider: ${profile.type}`);
   }
   profile(id){return this.repository.list().find(item=>item.id===id);}

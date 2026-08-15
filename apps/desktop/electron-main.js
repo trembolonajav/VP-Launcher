@@ -18,6 +18,7 @@ import { validateAgentMessage } from "./main/collector/BridgeProtocol.js";
 import { CollectorHealth } from "./main/collector/CollectorHealth.js";
 import { SessionManager } from "./main/session/SessionManager.js";
 import { NetworkManager } from "./main/network/NetworkManager.js";
+import { ProtonWorkerManager } from "./main/network/ProtonWorkerManager.js";
 
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const { app, BrowserWindow, WebContentsView, ipcMain, safeStorage, session } = electron;
@@ -38,7 +39,7 @@ const preparedPartitions = new Set();
 const networks = new Map();
 const agentStatuses = new Map();
 let mainWindow;
-let database, accountRepository, networkRepository, presetRepository, sessionRepository, eventRepository, settingsRepository, collectorRepository, collectorCoordinator, collectorHealth, cdpCollector, sessionManager, networkManager, vault;
+let database, accountRepository, networkRepository, presetRepository, sessionRepository, eventRepository, settingsRepository, collectorRepository, collectorCoordinator, collectorHealth, cdpCollector, sessionManager, networkManager, protonWorkerManager, vault;
 const sessionRunIds = new Map();
 const discoveryRuns = new Map();
 const recoveryAttemptsAt = new Map();
@@ -145,10 +146,10 @@ function openProtonSetup(id) {
 }
 function closeProtonSetup(id){const view=protonViews.get(id);if(!view)return{ok:true};mainWindow.contentView.removeChildView(view);view.webContents.close();protonViews.delete(id);return{ok:true};}
 
-async function prepareAccountNetwork(id,profileId) { const account=accounts.get(id),gameSession=session.fromPartition(account.partition),network=await networkManager.prepare({accountId:id,profileId:profileId||account.networkProfileId||"network:system",ses:gameSession,sessionRunId:sessionRunIds.get(id)});networks.set(id,network);return network; }
+async function prepareAccountNetwork(id,profileId) { const account=accounts.get(id),resolvedProfileId=profileId||account.networkProfileId||"network:system",profile=networkRepository.list().find(item=>item.id===resolvedProfileId);if(profile?.type==="PROTON"){try{const worker=await protonWorkerManager.start(id,[...accounts.keys()].indexOf(id)),status={state:"WORKER_RUNNING",port:worker.port,at:new Date().toISOString()};protonStatuses.set(id,status);pushAccountPatch(id,{protonSetup:status});}catch(error){const status={state:"WORKER_FAILED",error:error.message,at:new Date().toISOString()},network={profileId:resolvedProfileId,profileName:profile.name,provider:"PROTON",protected:true,reconnectSupported:true,applied:null,result:{status:"CONFIG_ERROR",error:error.message,checkedAt:new Date().toISOString()}};protonStatuses.set(id,status);networks.set(id,network);pushAccountPatch(id,{protonSetup:status,network});eventRepository.add({accountId:id,sessionRunId:sessionRunIds.get(id),type:"PROTON_WORKER_FAILED",severity:"ERROR",payload:{error:error.message}});return network;}}else protonWorkerManager.stop(id);const gameSession=session.fromPartition(account.partition),network=await networkManager.prepare({accountId:id,profileId:resolvedProfileId,ses:gameSession,sessionRunId:sessionRunIds.get(id)});networks.set(id,network);return network; }
 async function openAccount(id) { return sessionManager.open(id,async generation=>{sessionRunIds.set(id,sessionManager.snapshot(id).sessionRunId);const network=await prepareAccountNetwork(id);sessionManager.network(id,network.result);if(network.result.status!=="OK")return;createView(id,generation);}); }
 async function reconfigureAccountNetwork(id,profileId,{reconnect=false}={}) { const account=accounts.get(id);if(!account)return{ok:false,error:"Conta invÃ¡lida."};const state=sessionManager.snapshot(id);if(state.state==="CLOSED"){const network=await prepareAccountNetwork(id,profileId);return{ok:network.result.status==="OK",network};}const checking=sessionManager.beginNetworkCheck(id,reconnect?"network-reconnect":"network-profile-change");if(checking.state!=="NETWORK_CHECK")return{ok:false,error:"Encerre e reabra a sessÃ£o para trocar a rede neste estado."};closeViewResources(id);if(reconnect){const capability=await networkManager.reconnect(id);if(!capability.ok){sessionManager.network(id,{status:"CONFIG_ERROR",error:capability.error});return{ok:false,error:capability.error};}}const network=await prepareAccountNetwork(id,profileId);sessionManager.network(id,network.result);if(network.result.status==="OK")createView(id,sessionManager.snapshot(id).generation);return{ok:network.result.status==="OK",network,error:network.result.error}; }
-async function closeAccount(id,reason="USER_CLOSED") { const result=await sessionManager.close(id,reason,()=>closeViewResources(id));sessionRunIds.delete(id);return result; }
+async function closeAccount(id,reason="USER_CLOSED") { const result=await sessionManager.close(id,reason,()=>closeViewResources(id));protonWorkerManager.stop(id);sessionRunIds.delete(id);return result; }
 
 async function startDiscoveryFor(id) {
   if (!views.has(id)) return { ok:false,error:"Abra a sessão antes de iniciar a descoberta." };
@@ -218,6 +219,7 @@ function registerIpc() {
   ipcMain.handle("vp:open-proton-setup",(_event,id)=>openProtonSetup(id));
   ipcMain.handle("vp:layout-proton-setup",(_event,{id,bounds,visible})=>{for(const[accountId,view]of protonViews){const show=accountId===id&&Boolean(visible&&bounds);view.setVisible(show);if(show)view.setBounds({x:Math.round(bounds.x),y:Math.round(bounds.y),width:Math.max(1,Math.round(bounds.width)),height:Math.max(1,Math.round(bounds.height))});}return{ok:true};});
   ipcMain.handle("vp:close-proton-setup",(_event,id)=>closeProtonSetup(id));
+  ipcMain.handle("vp:start-proton-worker",async(_event,id)=>{try{const index=[...accounts.keys()].indexOf(id),worker=await protonWorkerManager.start(id,index);const status={state:"WORKER_RUNNING",port:worker.port,at:new Date().toISOString()};protonStatuses.set(id,status);pushAccountPatch(id,{protonSetup:status});eventRepository.add({accountId:id,type:"PROTON_WORKER_READY",payload:{port:worker.port}});return{ok:true,worker};}catch(error){const status={state:"WORKER_FAILED",error:error.message,at:new Date().toISOString()};protonStatuses.set(id,status);pushAccountPatch(id,{protonSetup:status});eventRepository.add({accountId:id,type:"PROTON_WORKER_FAILED",severity:"ERROR",payload:{error:error.message}});return{ok:false,error:error.message};}});
   ipcMain.handle("vp:close-embedded", async (_event,id) => ({ ok:true,session:await closeAccount(id) }));
   ipcMain.handle("vp:reload-embedded", (_event,id) => { const view=views.get(id);if(!view)return{ ok:false,error:"Sessão não está aberta." };sessionManager.recover(id,"manual-reload");view.webContents.reload();return{ ok:true }; });
   ipcMain.handle("vp:pause-session",(_event,id)=>({ ok:true,session:sessionManager.pause(id) }));
@@ -281,11 +283,12 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   if (recovered) eventRepository.add({ type: "UNCLEAN_SHUTDOWN_RECOVERED", severity: "WARN", payload: { sessions: recovered } });
   vault = new Vault(database, safeStorage, path.join(userData, "accounts.enc"));
   await vault.initialize();
+  protonWorkerManager=new ProtonWorkerManager({safeStorage,secretDir:path.join(userData,"network-secrets"),imageDir:path.join(dir,"..","..","infra","proton-worker")});
   accounts = new Map(accountRepository.list().map(account => [account.id, account]));
   for(const id of accounts.keys()){const encryptedConfig=path.join(userData,"network-secrets",`proton-${id}.wg.enc`);if(fs.existsSync(encryptedConfig))protonStatuses.set(id,{state:"CONFIG_READY",at:fs.statSync(encryptedConfig).mtime.toISOString()});}
   mainWindow = new BrowserWindow({ width: 1500, height: 920, minWidth: 1100, minHeight: 700, backgroundColor: "#0a0605", title: "VP Launcher", webPreferences: { preload: path.join(dir, "electron-preload.cjs"), contextIsolation: true, sandbox: true, backgroundThrottling: false } });
   mainWindow.setMenuBarVisibility(false);
-  let shutdownStarted=false;mainWindow.on("close",event=>{if(shutdownStarted)return;event.preventDefault();shutdownStarted=true;for(const id of [...protonViews.keys()])closeProtonSetup(id);Promise.all([...views.keys()].map(id=>closeAccount(id,"APP_EXIT"))).finally(()=>mainWindow.destroy());});
+  let shutdownStarted=false;mainWindow.on("close",event=>{if(shutdownStarted)return;event.preventDefault();shutdownStarted=true;for(const id of [...protonViews.keys()])closeProtonSetup(id);Promise.all([...accounts.keys()].map(id=>closeAccount(id,"APP_EXIT"))).finally(()=>{protonWorkerManager.stopAll();mainWindow.destroy();});});
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   mainWindow.webContents.on("will-navigate", (event, url) => { if (!url.startsWith("file://")) event.preventDefault(); });
   registerIpc();

@@ -1,4 +1,10 @@
 const { app, session } = require("electron");
+const os = require("node:os");
+const path = require("node:path");
+app.disableHardwareAcceleration();
+app.commandLine.appendSwitch("disable-gpu");
+app.commandLine.appendSwitch("disable-gpu-compositing");
+app.setPath("userData", path.join(os.tmpdir(), `vp-network-test-${process.pid}`));
 
 app.whenReady().then(async () => {
   const { NetworkManager } = await import("../apps/desktop/main/network/NetworkManager.js");

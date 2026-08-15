@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld("vpNative", {
   openProtonSetup: id => ipcRenderer.invoke("vp:open-proton-setup", id),
   layoutProtonSetup: layout => ipcRenderer.invoke("vp:layout-proton-setup", layout),
   closeProtonSetup: id => ipcRenderer.invoke("vp:close-proton-setup", id),
+  startProtonWorker: id => ipcRenderer.invoke("vp:start-proton-worker", id),
   presets: () => ipcRenderer.invoke("vp:presets"),
   savePreset: preset => ipcRenderer.invoke("vp:save-preset", preset),
   events: filter => ipcRenderer.invoke("vp:events", filter),

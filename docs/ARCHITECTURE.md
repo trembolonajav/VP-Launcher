@@ -10,7 +10,7 @@ O processo principal controla sessões, posicionamento dos navegadores, credenci
 
 Cada conta possui exatamente uma `AccountSession`, controlada pelo `SessionManager` no processo principal. Os estados oficiais são `CLOSED`, `STARTING`, `NETWORK_CHECK`, `AUTH_CHECK`, `AUTHENTICATING`, `READY`, `HUNTING`, `PAUSED`, `ACTION_RUNNING`, `WAITING_USER`, `RECOVERING` e `ERROR`. Transições inválidas são rejeitadas e sinais repetidos são idempotentes.
 
-O preflight de rede do P3 informa `OK`, `FAILED` ou `UNKNOWN`; proxy e Proton continuam reservados ao P4. Autenticação é confirmada por sinais observáveis do Agent, e não pelo clique de login. CAPTCHA, Cloudflare, 2FA e telas inesperadas levam a `WAITING_USER`, sem tentativa de contorno.
+O preflight de rede informa `OK`, `FAILED` ou `UNKNOWN` e impede o carregamento do jogo quando um perfil protegido falha. Autenticação é confirmada por sinais observáveis do Agent, e não pelo clique de login. CAPTCHA, Cloudflare, 2FA e telas inesperadas levam a `WAITING_USER`, sem tentativa de contorno.
 
 Reload, perda de heartbeat, falha de navegação e queda do renderer levam a recovery limitado. Cada abertura incrementa uma geração lógica; mensagens de uma View ou geração antiga são ignoradas. Toda transição real produz `SESSION_STATE_CHANGED` e utiliza o mesmo `session_run` até o fechamento.
 
@@ -52,7 +52,9 @@ O fechamento do P2 foi validado em 15/08/2026 com uma sessão real de 30 minutos
 
 O preflight tenta `ipwho.is` e depois `api.ipify.org`, observa IP, país, região, provedor e latência e aplica `expectedIp`, `expectedIpPrefix` e `expectedCountry`. A troca de perfil passa novamente por `NETWORK_CHECK`, invalida a geração anterior, encerra a View e reabre somente após aprovação.
 
-Proxy sem autenticação suporta HTTP, HTTPS, SOCKS4 e SOCKS5 conforme `session.setProxy`. Segredos fornecidos na UI são gravados no Vault e nunca entram em `config_json`; o uso de proxy autenticado permanece fail-closed enquanto não houver preflight autenticado confiável. No Windows, o cliente oficial do Proton altera a VPN do sistema e não expõe saídas independentes por Electron Session; portanto `ProtonProvider` é `BLOCKED_BY_PROVIDER_LIMITATION`, sem automação frágil da interface ou falsa separação por conta.
+Proxy sem autenticação suporta HTTP, HTTPS, SOCKS4 e SOCKS5 conforme `session.setProxy`. Segredos fornecidos na UI são gravados no Vault e nunca entram em `config_json`; o uso de proxy autenticado permanece fail-closed enquanto não houver preflight autenticado confiável.
+
+No Windows, cada perfil Proton utiliza um worker WireGuard isolado em um container Docker. A configuração baixada dentro da View dedicada da conta é criptografada imediatamente com `safeStorage`; o texto claro é entregue ao worker somente por stdin e mantido em `tmpfs`. Cada worker publica um proxy HTTP exclusivamente em `127.0.0.1` e porta distinta, aplicado apenas à `Session` Electron daquela conta. O preflight bloqueia o carregamento do jogo se o worker, o túnel ou a política de país falhar, sem fallback para a rede direta. O Launcher constrói a imagem local quando necessário e remove os containers ao encerrar as sessões ou o aplicativo.
 
 ## Legado
 

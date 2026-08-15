@@ -29,9 +29,10 @@ P2 Collector/Discovery está **CONCLUÍDO**. O candidato final passou por reload
 
 ## Próximas etapas
 
-1. P4 — validar em ambiente real dois proxies externos distintos; arquitetura, providers, preflight, bloqueio preventivo e isolamento controlado implementados;
-2. P5 — Action Engine e fila persistente;
-3. P6 — automação, métricas confiáveis e rotinas assistidas;
-4. empacotamento e atualizações.
+1. P5 — Action Engine e fila persistente;
+2. P6 — automação, métricas confiáveis e rotinas assistidas;
+3. empacotamento e atualizações.
 
 P3 Session Manager está **CONCLUÍDO**. O estado operacional pertence ao Main; lifecycle, auth observável, pausa, recovery limitado, isolamento e `session_runs` foram validados com reload, restart, duas contas simultâneas e shutdown normal, sem avançar P4/P5/P6.
+
+P4 Rede por Conta está **CONCLUÍDO**. Dois perfis Proton/WireGuard foram executados simultaneamente em workers Docker isolados e validados pelo preflight das respectivas Electron Sessions, com IP e país distintos. A troca da Conta 01 foi exercitada sem alterar a rota da Conta 02; configurações permanecem criptografadas e não existe fallback para Direct.
