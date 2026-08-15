@@ -2,15 +2,17 @@ const clean = (value, limit = 10000) => String(value ?? "").replace(/\s+/g, " ")
 
 function readIdentity(text, state) {
   const match = text.match(/\b([A-Z][A-Z0-9_]{2,})\s+LV\s*(\d+)\s+(.+?)\s+XP\s+(\d+)%/i);
-  if (match) { state.identity = { player: match[1], level: Number(match[2]), xpPercent: Number(match[4]) }; state.location = { ...state.location, current: clean(match[3], 120) }; }
+  if (match) state.identity = { player: match[1], level: Number(match[2]), xpPercent: Number(match[4]) };
+  const location = text.match(/(?:Mapa|Local|Localiza[cÃ§][aÃ£]o)\s*[:\-]\s*(.{2,60}?)(?=\s+(?:XP|HP|Gold|Dinheiro|Capacidade|Mochila|Invent[aÃ¡]rio)\b|$)/iu);
+  if (location) state.location = { ...state.location, current: clean(location[1], 60) };
 }
 function readPokemon(text, state) {
   const match = text.match(/\b([A-Za-z][A-Za-z.' -]{1,30})\s+Lv\.?\s*(\d+)\s+HP\s+(\d+)\s*\/\s*(\d+)\s+XP\s+(\d+)%/i);
   if (match) state.pokemon = { name: clean(match[1], 40), level: Number(match[2]), hp: Number(match[3]), maxHp: Number(match[4]), xpPercent: Number(match[5]) };
 }
 function readInventory(text, state) {
-  const values = [...text.matchAll(/\b(\d+)\s*\/\s*(\d+)\b/g)].map(match => ({ used: Number(match[1]), capacity: Number(match[2]) })).filter(value => value.capacity >= 100 && value.used <= value.capacity);
-  const inventory = values.find(value => value.capacity === 335) || values.at(-1); if (inventory) state.inventory = inventory;
+  const inventory = text.match(/(?:Capacidade|Mochila|Invent[aÃ¡]rio)[^\d]{0,40}(\d+)\s*\/\s*(\d+)/i);
+  if (inventory) state.inventory = { used: Number(inventory[1]), capacity: Number(inventory[2]) };
   const collection = text.match(/Cole[cç][aã]o\s+(\d+)\s*\/\s*(\d+)/i); if (collection) state.collection = { used: Number(collection[1]), total: Number(collection[2]) };
 }
 function readGame(text, state) {

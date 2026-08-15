@@ -28,17 +28,21 @@ test("renderer cannot import sqlite or safeStorage", () => {
   const renderer = fs.readFileSync("apps/desktop/ui/app.js", "utf8");
   assert.equal(/node:sqlite|safeStorage/.test(renderer), false);
   assert.equal(/fetch\(|\/api\//.test(renderer), false);
+  assert.equal(/setInterval\(refresh/.test(renderer), false);
+  assert.match(renderer,/onStateChanged/);
 });
 
 test("collector uses preload deltas instead of page polling injection", () => {
   assert.match(main, /registerPreloadScript/);
-  assert.match(main, /vp:agent-delta/);
+  assert.match(main, /vp:agent-message/);
+  assert.equal(/vp:agent-delta/.test(main), false);
   assert.equal(/collectTelemetry|gameAgentScript/.test(main), false);
 });
 
 test("sandboxed game preload is self-contained and reports startup status", () => {
   const preload = fs.readFileSync("apps/desktop/game-agent/preload.cjs", "utf8");
   assert.equal(/require\(["']\.\//.test(preload), false);
-  assert.match(preload, /vp:agent-status/);
+  assert.equal(/require\(["'](?:fs|child_process|node:|sqlite)/.test(preload),false);
+  assert.match(preload, /vp:agent-message/);
   assert.match(main, /GAME_AGENT_READY/);
 });

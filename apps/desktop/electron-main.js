@@ -14,10 +14,18 @@ import { Vault, VaultState } from "./main/security/Vault.js";
 import { CollectorRepository } from "./main/storage/CollectorRepository.js";
 import { CollectorCoordinator } from "./main/collector/CollectorCoordinator.js";
 import { CDPCollector } from "./main/collector/CDPCollector.js";
+import { validateAgentMessage } from "./main/collector/BridgeProtocol.js";
+import { CollectorHealth } from "./main/collector/CollectorHealth.js";
 
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const { app, BrowserWindow, WebContentsView, ipcMain, safeStorage, session } = electron;
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) app.quit();
 const config = JSON.parse(fs.readFileSync(path.join(dir, "seed", "default-accounts.json"), "utf8"));
+const autostartAccount = process.argv.find(value => value.startsWith("--autostart-account="))?.split("=").slice(1).join("=") || null;
+const p2Validation = process.argv.includes("--p2-validation");
+const p2Soak = process.argv.includes("--p2-soak");
+const exitAfterMs = Number(process.argv.find(value => value.startsWith("--exit-after-ms="))?.split("=")[1] || 0);
 let accounts = new Map();
 const views = new Map();
 const viewAccountIds = new Map();
@@ -25,9 +33,10 @@ const preparedPartitions = new Set();
 const networks = new Map();
 const agentStatuses = new Map();
 let mainWindow;
-let database, accountRepository, networkRepository, presetRepository, sessionRepository, eventRepository, settingsRepository, collectorRepository, collectorCoordinator, cdpCollector, vault;
+let database, accountRepository, networkRepository, presetRepository, sessionRepository, eventRepository, settingsRepository, collectorRepository, collectorCoordinator, collectorHealth, cdpCollector, vault;
 const sessionRunIds = new Map();
 const discoveryRuns = new Map();
+function pushAccountPatch(accountId, patch) { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("vp:state-changed",{ accountId,patch }); }
 
 function profileSummaries() {
   const credentials = new Map(vault.summaries().map(item => [item.id, item]));
@@ -63,9 +72,11 @@ async function inspectNetwork(id, view) {
     const previous = networks.get(id);
     const current = { ip: data.ip, country: data.country_code, city: data.city, provider: data.connection?.isp || data.connection?.org || "", vpn: Boolean(data.security?.vpn), proxy: Boolean(data.security?.proxy), checkedAt: new Date().toISOString() };
     networks.set(id, current);
+    pushAccountPatch(id,{ network:current });
     if (!previous?.ip || previous.ip !== current.ip) eventRepository?.add({ accountId: id, sessionRunId: sessionRunIds.get(id), type: previous?.ip ? "NETWORK_CHANGED" : "NETWORK_CHECKED", severity: previous?.ip ? "WARN" : "INFO", payload: { ip: current.ip, country: current.country, provider: current.provider, previousIp: previous?.ip || null } });
   } catch (error) {
     networks.set(id, { error: error.message, checkedAt: new Date().toISOString() });
+    pushAccountPatch(id,{ network:networks.get(id) });
     eventRepository?.add({ accountId: id, sessionRunId: sessionRunIds.get(id), type: "NETWORK_CHECK_FAILED", severity: "WARN", payload: { error: error.message } });
   }
 }
@@ -82,6 +93,7 @@ function createView(id) {
   mainWindow.contentView.addChildView(view);
   views.set(id, view);
   viewAccountIds.set(view.webContents.id, id);
+  collectorHealth.patch(id,{ viewAlive:true,collectorActive:true,sessionRunId:null });
   gameSession.setPermissionCheckHandler(() => false);
   gameSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
   view.webContents.on("will-navigate", (event, url) => {
@@ -115,6 +127,7 @@ function closeView(id, reason = "USER_CLOSED") {
   cdpCollector.detach(id);
   const discoveryRunId = discoveryRuns.get(id); if (discoveryRunId) { collectorRepository.stopDiscovery(discoveryRunId); discoveryRuns.delete(id); }
   cdpCollector.stopDiscovery(id);
+  collectorRepository.safeFlush();
   viewAccountIds.delete(view.webContents.id);
   mainWindow.contentView.removeChildView(view);
   view.webContents.close();
@@ -127,6 +140,23 @@ function closeView(id, reason = "USER_CLOSED") {
     eventRepository.add({ accountId: id, sessionRunId, type: "SESSION_CLOSED", payload: { reason } });
     sessionRunIds.delete(id);
   }
+  collectorHealth.remove(id);
+}
+
+async function startDiscoveryFor(id) {
+  if (!views.has(id)) return { ok:false,error:"Abra a sessão antes de iniciar a descoberta." };
+  if (discoveryRuns.has(id)) return { ok:true,runId:discoveryRuns.get(id) };
+  const runId=collectorRepository.startDiscovery(id); discoveryRuns.set(id,runId); await cdpCollector.startDiscovery(id,runId);
+  eventRepository.add({ accountId:id,sessionRunId:sessionRunIds.get(id),type:"DISCOVERY_STARTED",payload:{ runId } });
+  return { ok:true,runId };
+}
+
+function stopDiscoveryFor(id) {
+  const runId=discoveryRuns.get(id); if (!runId) return { ok:true };
+  cdpCollector.stopDiscovery(id); collectorRepository.safeFlush(); collectorRepository.stopDiscovery(runId);
+  const summary={ ...collectorRepository.discoverySummary(runId),collector:collectorRepository.status() }; discoveryRuns.delete(id);
+  eventRepository.add({ accountId:id,sessionRunId:sessionRunIds.get(id),type:"DISCOVERY_STOPPED",payload:{ runId,summary } });
+  return { ok:true,runId,summary };
 }
 
 async function runGameAction(id, action, payload = {}) {
@@ -177,6 +207,7 @@ function registerIpc() {
     return { ok: true };
   });
   ipcMain.handle("vp:close-embedded", (_event, id) => { closeView(id); return { ok: true }; });
+  ipcMain.handle("vp:reload-embedded", (_event,id) => { const view=views.get(id);if(!view)return{ ok:false,error:"Sessão não está aberta." };view.webContents.reload();return{ ok:true }; });
   ipcMain.handle("vp:game-action", (_event, { id, action, payload }) => runGameAction(id, action, payload));
   ipcMain.handle("vp:profiles", () => profileSummaries());
   ipcMain.handle("vp:save-profile", async (_event, profile) => {
@@ -202,14 +233,17 @@ function registerIpc() {
   ipcMain.handle("vp:collector-endpoints", (_event, limit) => collectorRepository.listEndpoints(limit));
   ipcMain.handle("vp:collector-observations", (_event, limit) => collectorRepository.listObservations(limit));
   ipcMain.handle("vp:collector-status", () => collectorRepository.status());
-  ipcMain.handle("vp:start-discovery", async (_event, id) => { if (!views.has(id)) return { ok: false, error: "Abra a sessÃ£o antes de iniciar a descoberta." }; if (discoveryRuns.has(id)) return { ok: true, runId: discoveryRuns.get(id) }; const runId = collectorRepository.startDiscovery(id); discoveryRuns.set(id, runId); await cdpCollector.startDiscovery(id, runId); eventRepository.add({ accountId: id, sessionRunId: sessionRunIds.get(id), type: "DISCOVERY_STARTED", payload: { runId } }); return { ok: true, runId }; });
-  ipcMain.handle("vp:stop-discovery", (_event, id) => { const runId = discoveryRuns.get(id); if (!runId) return { ok: true }; cdpCollector.stopDiscovery(id); collectorRepository.stopDiscovery(runId); discoveryRuns.delete(id); eventRepository.add({ accountId: id, sessionRunId: sessionRunIds.get(id), type: "DISCOVERY_STOPPED", payload: { runId } }); return { ok: true }; });
+  ipcMain.handle("vp:collector-health", (_event,id) => id ? collectorHealth.get(id,sessionRunIds.get(id)||null) : collectorHealth.list(sessionRunIds));
+  ipcMain.handle("vp:start-discovery", (_event,id) => startDiscoveryFor(id));
+  ipcMain.handle("vp:stop-discovery", (_event,id) => stopDiscoveryFor(id));
   ipcMain.handle("vp:get-setting", (_event, { key, fallback }) => settingsRepository.get(key, fallback));
   ipcMain.handle("vp:set-setting", (_event, { key, value }) => settingsRepository.set(key, value));
   ipcMain.handle("vp:update-account", (_event, update) => { const account = accountRepository.update(update); accounts = new Map(accountRepository.list().map(item => [item.id, item])); return account; });
 }
 
-app.whenReady().then(async () => {
+app.on("second-instance", () => { if (mainWindow && !mainWindow.isDestroyed()) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.show(); mainWindow.focus(); } });
+
+if (hasSingleInstanceLock) app.whenReady().then(async () => {
   const userData = app.getPath("userData");
   database = openDatabase(path.join(userData, "vp-launcher.db"));
   accountRepository = new AccountRepository(database);
@@ -219,8 +253,9 @@ app.whenReady().then(async () => {
   eventRepository = new EventRepository(database);
   settingsRepository = new SettingsRepository(database);
   collectorRepository = new CollectorRepository(database, error => eventRepository.add({ type: "COLLECTOR_FLUSH_FAILED", severity: "ERROR", payload: { error: error.message } }));
+  collectorHealth = new CollectorHealth(collectorRepository);
   collectorCoordinator = new CollectorCoordinator(collectorRepository, eventRepository, sessionRunIds);
-  cdpCollector = new CDPCollector(collectorRepository, eventRepository, id => collectorCoordinator.context(id));
+  cdpCollector = new CDPCollector(collectorRepository,eventRepository,id=>collectorCoordinator.context(id),collectorHealth);
   collectorRepository.retain();
   new BootstrapService(database, accountRepository).run(config);
   const recovered = sessionRepository.recoverUnclean();
@@ -234,11 +269,26 @@ app.whenReady().then(async () => {
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   mainWindow.webContents.on("will-navigate", (event, url) => { if (!url.startsWith("file://")) event.preventDefault(); });
   registerIpc();
-  ipcMain.on("vp:agent-delta", (event, payload) => { const id = viewAccountIds.get(event.sender.id); if (!id || !/^https:\/\/(?:[^/]+\.)?pokewg\.com\//i.test(event.senderFrame?.url || event.sender.getURL())) return; collectorCoordinator.ingest(id, payload); });
-  ipcMain.on("vp:agent-action", (event, payload) => { const id = viewAccountIds.get(event.sender.id); if (!id || !/^https:\/\/(?:[^/]+\.)?pokewg\.com\//i.test(event.senderFrame?.url || event.sender.getURL())) return; collectorCoordinator.recordUiAction(id, payload?.label); });
-  ipcMain.on("vp:agent-status", (event, payload) => { const id = viewAccountIds.get(event.sender.id); if (!id || !/^https:\/\/(?:[^/]+\.)?pokewg\.com\//i.test(event.senderFrame?.url || event.sender.getURL())) return; const status = { state: payload?.state === "READY" ? "READY" : "ERROR", error: payload?.error || null, at: payload?.at || new Date().toISOString() }; agentStatuses.set(id,status); eventRepository.add({ accountId:id,sessionRunId:sessionRunIds.get(id),type:status.state === "READY" ? "GAME_AGENT_READY" : "GAME_AGENT_ERROR",severity:status.state === "READY" ? "INFO" : "ERROR",payload:{ error:status.error } }); });
+  ipcMain.on("vp:agent-message", (event,message) => { const id=viewAccountIds.get(event.sender.id),url=event.senderFrame?.url||event.sender.getURL(); if (!id || !/^https:\/\/(?:[^/]+\.)?pokewg\.com\//i.test(url)) return; const prior=collectorHealth.get(id,sessionRunIds.get(id)||null),validated=validateAgentMessage(message,id,prior.sequence,prior.agentInstanceId); if (!validated.ok) { collectorHealth.patch(id,{ lastError:`Bridge rejected: ${validated.error}` }); eventRepository.add({ accountId:id,sessionRunId:sessionRunIds.get(id),type:"AGENT_MESSAGE_REJECTED",severity:"WARN",payload:{ reason:validated.error } }); return; } const now=new Date().toISOString(); collectorHealth.patch(id,{ bridgeConnected:true,lastAgentMessageAt:now,sequence:message.sequence,agentInstanceId:message.instanceId,lastError:null }); if (message.type==="STATUS") { const ready=message.payload.state==="READY",status={ state:ready?"READY":"ERROR",error:message.payload.error||null,at:message.timestamp,agentVersion:message.payload.agentVersion||null },changed=prior.agentInstanceId!==message.instanceId||prior.agentInstalled!==ready||Boolean(prior.lastError)!==Boolean(status.error); agentStatuses.set(id,status);collectorHealth.patch(id,{ agentInstalled:ready,agentVersion:status.agentVersion,lastError:status.error });if(changed)eventRepository.add({ accountId:id,sessionRunId:sessionRunIds.get(id),type:ready?"GAME_AGENT_READY":"GAME_AGENT_ERROR",severity:ready?"INFO":"ERROR",payload:{ error:status.error,agentVersion:status.agentVersion } });pushAccountPatch(id,{ agentStatus:status,health:collectorHealth.get(id,sessionRunIds.get(id)||null) }); } else if (message.type==="ACTION") collectorCoordinator.recordUiAction(id,message.payload.label); else if (message.type==="DELTA") { const result=collectorCoordinator.ingest(id,message.payload,message.timestamp); if (result) { collectorHealth.patch(id,{ lastDeltaAt:now,lastPersistAt:collectorRepository.status().lastPersistAt }); pushAccountPatch(id,{ telemetry:result.current,agentStatus:agentStatuses.get(id)||null,health:collectorHealth.get(id,sessionRunIds.get(id)||null) }); } } });
   setInterval(() => { for (const [id, view] of views) void inspectNetwork(id, view); }, 60000).unref();
   await mainWindow.loadFile(path.join(dir, "ui", "index.html"));
+  if (autostartAccount) {
+    createView(autostartAccount);
+    if (p2Validation) {
+      setTimeout(() => views.get(autostartAccount)?.webContents.reload(),15000);
+      setTimeout(() => closeView(autostartAccount,"P2_REOPEN_TEST"),30000);
+      setTimeout(() => createView(autostartAccount),33000);
+      setTimeout(() => void startDiscoveryFor(autostartAccount),50000);
+      setTimeout(() => stopDiscoveryFor(autostartAccount),170000);
+    }
+    if (p2Soak) {
+      setTimeout(() => void startDiscoveryFor(autostartAccount),60000);
+      setTimeout(() => stopDiscoveryFor(autostartAccount),660000);
+      setTimeout(() => { eventRepository.add({ accountId:autostartAccount,sessionRunId:sessionRunIds.get(autostartAccount),type:"P2_SOAK_COMPLETED",payload:{ health:collectorHealth.get(autostartAccount,sessionRunIds.get(autostartAccount)),collector:collectorRepository.status() } }); collectorRepository.safeFlush(); },1800000);
+      setTimeout(() => mainWindow?.close(),1802000);
+    }
+  }
+  if (exitAfterMs >= 1000) setTimeout(() => mainWindow?.close(),exitAfterMs);
 });
 
 app.on("window-all-closed", () => { collectorRepository?.close(); database?.close(); app.quit(); });

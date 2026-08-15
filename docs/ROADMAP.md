@@ -23,14 +23,14 @@
 - catálogo somente de nomes de storage keys, batching e retenção automática;
 - filtros técnicos de logs e seletor de mapa alimentado pelo catálogo.
 
+## Validação final do P2
+
+P2 Collector/Discovery está **CONCLUÍDO**. O candidato final passou por reload, reabertura, encerramento normal e soak real de 30 minutos. Durante 10 minutos de Discovery, 7.993 observações foram consolidadas em 15 fatos; `flushErrors`, `pending` e `dropped` terminaram em zero, sem detach persistente, rejeição do Bridge ou exposição de segredos. O renderer já opera por eventos, sem refresh/render global.
+
 ## Próximas etapas
 
-1. P2.2 — soak validation de aproximadamente 30 minutos;
-2. P2.5 — renderer orientado a eventos, sem refresh/render global;
-3. P3 — Session Manager e máquina de estados;
-4. P4 — aplicar proxy/Proton e IP esperado por perfil, com bloqueio preventivo;
-5. P5 — Action Engine e fila persistente;
-6. P6 — automação, métricas confiáveis e rotinas assistidas;
-7. empacotamento e atualizações.
-
-P2.1 Discovery Intelligence está concluído. O catálogo aprendido já alimenta a troca manual de mapas.
+1. P3 — Session Manager e máquina de estados;
+2. P4 — aplicar proxy/Proton e IP esperado por perfil, com bloqueio preventivo;
+3. P5 — Action Engine e fila persistente;
+4. P6 — automação, métricas confiáveis e rotinas assistidas;
+5. empacotamento e atualizações.

@@ -74,6 +74,8 @@ const state = {
   ,logFilter: 'TODOS'
   ,mapPicker: false
   ,discoveryEvents: []
+  ,collectorStatus: null
+  ,collectorHealth: []
 };
 
 const svg = (d, opts = {}) => {
@@ -216,6 +218,7 @@ function render() {
   const sideActions = [
     { action: 'change-map', label: 'Trocar mapa', icon: I.mapa },
     { action: 'noop', label: 'Vender loot', icon: I.vender },
+    { action: 'reload-page', label: 'Recarregar jogo', icon: I.reiniciar },
     { action: 'restart-selected', label: 'Reiniciar', icon: I.reiniciar }
   ];
   const focusActions = [
@@ -404,10 +407,11 @@ function renderCollectorPanel(){
   const actions=account?`<button data-discovery="${active?'stop':'start'}" style="height:36px;padding:0 16px;border:1px solid rgba(229,179,79,.45);border-radius:9px;background:${active?'#421414':'#85191b'};color:#f7eee7;cursor:pointer;">${active?'Parar descoberta':'Iniciar descoberta'} · ${esc(account.name)}</button>`:'';
   const maps=state.maps.map(m=>`<div style="padding:10px;border-bottom:1px solid #2b1b15;"><b>${esc(m.label)}</b><span style="float:right;color:#8a7a70;">${m.level?`Nv ${m.level} · `:''}${m.seenCount} leituras</span></div>`).join('')||'<div style="padding:18px;color:#8a7a70;">Abra uma conta e visite o menu Mapa para iniciar o catálogo.</div>';
   const endpoints=state.endpoints.map(e=>`<div style="padding:9px;border-bottom:1px solid #2b1b15;font-family:monospace;color:#d7c5bb;"><span style="color:#e5b34f;">${esc(e.method)}</span> ${esc(e.origin+e.path)}<span style="float:right;color:#8a7a70;">${e.seenCount}×</span></div>`).join('')||'<div style="padding:18px;color:#8a7a70;">Nenhum endpoint observado nesta instalação.</div>';
-  return panelShell('Mapas e Discovery','Catálogo local criado pelo Agent V2 e pelo CDP interno; sem corpos, cookies ou tokens.',`<div style="display:grid;grid-template-columns:1fr 1.35fr;gap:16px;"><section style="border:1px solid #39231b;border-radius:12px;overflow:hidden;"><h3 style="padding:13px;margin:0;color:#f7eee7;">Mapas observados</h3>${maps}</section><section style="border:1px solid #39231b;border-radius:12px;overflow:hidden;"><h3 style="padding:13px;margin:0;color:#f7eee7;">Endpoints redigidos</h3>${endpoints}</section></div>`,actions);
+  const health=state.collectorHealth.find(item=>item.accountId===account?.id),queue=state.collectorStatus; const diagnostic=health?`<div style="margin-bottom:14px;padding:12px;border:1px solid #39231b;border-radius:10px;color:#b5a196;font-family:monospace;">Agent ${health.agentInstalled?'READY':'—'} · Bridge ${health.bridgeConnected?'ON':'—'} · CDP ${health.cdpAttached?'ON':'—'} · seq ${health.sequence} · fila ${queue?.pending??0} · coalescidos ${queue?.coalesced??0} · descartados ${queue?.dropped??0}${health.lastError?`<br><span style="color:#e48275;">${esc(health.lastError)}</span>`:''}</div>`:'';
+  return panelShell('Mapas e Discovery','Catálogo local criado pelo Agent V2 e pelo CDP interno; sem corpos, cookies ou tokens.',`${diagnostic}<div style="display:grid;grid-template-columns:1fr 1.35fr;gap:16px;"><section style="border:1px solid #39231b;border-radius:12px;overflow:hidden;"><h3 style="padding:13px;margin:0;color:#f7eee7;">Mapas observados</h3>${maps}</section><section style="border:1px solid #39231b;border-radius:12px;overflow:hidden;"><h3 style="padding:13px;margin:0;color:#f7eee7;">Endpoints redigidos</h3>${endpoints}</section></div>`,actions);
 }
-function eventCategory(e){if(/NETWORK|COLLECTOR|SOCKET|ENDPOINT/.test(e.type))return'NETWORK';if(/ACTION/.test(e.type))return'ACTION';if(/MAP|POKEMON|GOLD|GAME|UI_/.test(e.type))return'GAME';return'SYSTEM';}
-function renderLogsPanel(){ const filters=['TODOS','GAME','NETWORK','ACTION','SYSTEM'].map(x=>`<button data-log-filter="${x}" style="padding:7px 11px;border:1px solid #493025;border-radius:7px;background:${state.logFilter===x?'#85191b':'#160f0c'};color:#f7eee7;cursor:pointer;">${x}</button>`).join(''); const discovered=state.discoveryEvents.map(x=>({ ...x,category:'NETWORK',type:`${x.category} ${x.direction||''} ${x.target||''}`.trim(),severity:'INFO' })); const all=state.events.concat(discovered).sort((a,b)=>String(b.occurredAt).localeCompare(String(a.occurredAt))); const rows=all.filter(e=>state.logFilter==='TODOS'||eventCategory(e)===state.logFilter||e.category===state.logFilter).map(e=>`<div style="display:grid;grid-template-columns:150px 80px 170px 1fr;gap:14px;padding:10px;border-bottom:1px solid #2b1b15;"><span style="color:#8a7a70;">${esc(e.occurredAt||'')}</span><span style="color:#d98350;">${esc(e.category||eventCategory(e))}</span><b style="color:${e.severity==='ERROR'?'#e48275':'#e5b34f'};">${esc(e.type)}</b><span>${esc([e.accountId||'sistema',e.uiSurface,e.location].filter(Boolean).join(' · '))}</span></div>`).join('')||'<div style="padding:18px;color:#8a7a70;">Nenhum evento nesta categoria.</div>'; return panelShell('Logs operacionais','Eventos persistidos por conta e sessão.',`<div style="display:flex;gap:7px;margin-bottom:12px;">${filters}</div><section style="border:1px solid #39231b;border-radius:12px;overflow:hidden;">${rows}</section>`); }
+function eventCategory(e){if(/DISCOVERY/.test(e.type))return'DISCOVERY';if(/NETWORK|COLLECTOR|SOCKET|ENDPOINT/.test(e.type))return'NETWORK';if(/MAP|POKEMON|GOLD|GAME|PLAYER|INVENTORY|UI_/.test(e.type))return'GAME';return'SYSTEM';}
+function renderLogsPanel(){ const filters=['TODOS','GAME','NETWORK','DISCOVERY','SYSTEM'].map(x=>`<button data-log-filter="${x}" style="padding:7px 11px;border:1px solid #493025;border-radius:7px;background:${state.logFilter===x?'#85191b':'#160f0c'};color:#f7eee7;cursor:pointer;">${x}</button>`).join(''); const discovered=state.discoveryEvents.map(x=>({ ...x,category:'DISCOVERY',type:`${x.category} ${x.direction||''} ${x.target||''}`.trim(),severity:'INFO' })); const all=state.events.concat(discovered).sort((a,b)=>String(b.occurredAt).localeCompare(String(a.occurredAt))); const rows=all.filter(e=>state.logFilter==='TODOS'||eventCategory(e)===state.logFilter||e.category===state.logFilter).map(e=>`<div style="display:grid;grid-template-columns:150px 80px 170px 1fr;gap:14px;padding:10px;border-bottom:1px solid #2b1b15;"><span style="color:#8a7a70;">${esc(e.occurredAt||'')}</span><span style="color:#d98350;">${esc(e.category||eventCategory(e))}</span><b style="color:${e.severity==='ERROR'?'#e48275':'#e5b34f'};">${esc(e.type)}</b><span>${esc([e.accountId||'sistema',e.uiSurface,e.location].filter(Boolean).join(' · '))}</span></div>`).join('')||'<div style="padding:18px;color:#8a7a70;">Nenhum evento nesta categoria.</div>'; return panelShell('Logs operacionais','Eventos persistidos por conta e sessão.',`<div style="display:flex;gap:7px;margin-bottom:12px;">${filters}</div><section style="border:1px solid #39231b;border-radius:12px;overflow:hidden;">${rows}</section>`); }
 function renderMapPicker(){const account=state.live[state.selected];return `<div style="position:fixed;z-index:40;inset:0;background:rgba(0,0,0,.72);display:grid;place-items:center;"><div style="width:min(520px,90vw);padding:22px;border:1px solid #6a422c;border-radius:14px;background:#180e0b;"><h2 style="margin:0 0 6px;color:#e5b34f;font-family:Cinzel,serif;">Trocar mapa</h2><p style="color:#8a7a70;">${esc(account?.name||'Conta')} · selecione um mapa descoberto.</p><select id="vp-map-select" style="width:100%;height:42px;background:#090504;color:#f7eee7;border:1px solid #493025;border-radius:8px;padding:0 10px;">${state.maps.map(m=>`<option value="${esc(m.label)}">${esc(m.label)}${m.level?` · Nv ${m.level}`:''}</option>`).join('')}</select><div style="display:flex;gap:9px;margin-top:18px;"><button data-map-go style="flex:1;height:38px;background:#85191b;color:white;border:1px solid #d98350;border-radius:8px;cursor:pointer;">IR</button><button data-map-cancel style="height:38px;background:#120b09;color:#b5a196;border:1px solid #493025;border-radius:8px;cursor:pointer;">Cancelar</button></div></div></div>`;}
 
 function renderProfilesPanel(){
@@ -455,23 +459,23 @@ function renderList(accounts) {
             <div style="flex:none;width:30px;height:30px;border-radius:8px;border:1px solid rgba(229,179,79,.24);background:repeating-linear-gradient(135deg,#150d0b 0 4px,#1e1210 4px 8px);"></div>
             <div style="display:flex;flex-direction:column;gap:2px;min-width:0;">
               <div style="font-size:12.5px;font-weight:700;color:#f7eee7;">${esc(a.name)}</div>
-              <div style="font-size:10.5px;font-weight:500;color:#8a7a70;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(a.profile)}</div>
+              <div data-live-account="${esc(a.id)}" data-live-field="profile" style="font-size:10.5px;font-weight:500;color:#8a7a70;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(a.profile)}</div>
             </div>
           </div>
           <div>
-            <div style="display:inline-flex;align-items:center;gap:6px;height:21px;padding:0 9px;border-radius:99px;border:1px solid ${a.statusBorder};background:${a.statusBg};color:${a.statusColor};font-size:10.5px;font-weight:700;">
+            <div data-live-account="${esc(a.id)}" data-live-field="status" style="display:inline-flex;align-items:center;gap:6px;height:21px;padding:0 9px;border-radius:99px;border:1px solid ${a.statusBorder};background:${a.statusBg};color:${a.statusColor};font-size:10.5px;font-weight:700;">
               <div style="width:6px;height:6px;border-radius:50%;background:currentColor;"></div>${esc(a.statusLabel)}
             </div>
           </div>
           <div style="display:flex;align-items:center;gap:7px;min-width:0;color:#d7c5bb;font-size:12px;font-weight:600;">
             ${svg(I.mapa, { stroke: '#8a7a70', w: 14, style: 'flex:none;' })}
-            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(a.map)}</span>
+            <span data-live-account="${esc(a.id)}" data-live-field="map" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(a.map)}</span>
           </div>
           <div style="display:flex;align-items:center;gap:9px;min-width:0;">
             <div data-autotoggle="${a.i}" style="width:32px;height:18px;border-radius:99px;padding:2px;flex-shrink:0;border:1px solid ${a.switchBorder};background:${a.switchBg};display:flex;justify-content:${a.switchAlign};">
               <div style="width:12px;height:12px;border-radius:50%;background:${a.knob};"></div>
             </div>
-            <div style="font-size:10.5px;font-weight:600;color:${a.ruleColor};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(a.rule)}</div>
+            <div data-live-account="${esc(a.id)}" data-live-field="rule" style="font-size:10.5px;font-weight:600;color:${a.ruleColor};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(a.rule)}</div>
           </div>
           <div style="text-align:right;font-size:12.5px;font-weight:700;color:${a.metricColor};">${esc(a.xph)}</div>
           <div style="text-align:right;font-size:12.5px;font-weight:700;color:${a.goldColor};">${esc(a.goldh)}</div>
@@ -658,7 +662,7 @@ async function loadProfiles(){
   [state.profiles,state.networkProfiles,state.presets]=await Promise.all([window.vpNative.profiles(),window.vpNative.networkProfiles(),window.vpNative.presets()]);
   render();
 }
-async function loadCollector(){ [state.maps,state.endpoints]=await Promise.all([window.vpNative.collectorMaps(),window.vpNative.collectorEndpoints(300)]); render(); }
+async function loadCollector(){ [state.maps,state.endpoints,state.collectorStatus,state.collectorHealth]=await Promise.all([window.vpNative.collectorMaps(),window.vpNative.collectorEndpoints(300),window.vpNative.collectorStatus(),window.vpNative.collectorHealth()]); render(); }
 async function loadLogs(){state.discoveryEvents=await window.vpNative.collectorObservations(300);render();}
 function profileFromForm(form){return{id:form.dataset.profileForm,name:form.elements.name.value,username:form.elements.username.value,password:form.elements.password.value,autoLogin:form.elements.autoLogin.checked,networkProfileId:form.elements.networkProfileId.value,presetId:form.elements.presetId.value};}
 async function saveProfileForm(form){
@@ -682,11 +686,11 @@ async function syncEmbeddedViews(){
 }
 
 async function openIndexes(indexes) {
-  for(const i of indexes){const id=state.live[i]?.id;if(!id)continue;const result=await window.vpNative.openEmbedded(id);if(result.ok&&!state.embedded.includes(i))state.embedded.push(i);else if(!result.ok)notice(result.error);}
+  for(const i of indexes){const id=state.live[i]?.id;if(!id)continue;const result=await window.vpNative.openEmbedded(id);if(result.ok){if(!state.embedded.includes(i))state.embedded.push(i);state.live[i].running=true;}else notice(result.error);}
   render();
 }
 async function closeIndexes(indexes) {
-  for(const i of indexes){const id=state.live[i]?.id;if(id){await window.vpNative.closeEmbedded(id);state.embedded=state.embedded.filter(x=>x!==i);}}
+  for(const i of indexes){const id=state.live[i]?.id;if(id){await window.vpNative.closeEmbedded(id);state.embedded=state.embedded.filter(x=>x!==i);state.live[i].running=false;state.live[i].telemetry=null;}}
   render();
 }
 
@@ -715,6 +719,7 @@ async function handleAction(action) {
     case 'restart-selected':
       await closeIndexes([i]);
       return openIndexes([i]);
+    case 'reload-page': { const account=state.live[i];if(!account?.running)return notice('Abra a sessão antes de recarregar.');const result=await window.vpNative.reloadEmbedded(account.id);notice(result.ok?'Jogo recarregado; aguardando Agent reconectar.':result.error);return; }
     case 'noop':
     default:
       return;
@@ -746,7 +751,7 @@ document.addEventListener('click',async e=>{
   if(e.target.closest('[data-map-cancel]')){state.mapPicker=false;return render();}
   if(e.target.closest('[data-map-go]')){const account=state.live[state.selected],map=document.getElementById('vp-map-select')?.value;if(!account||!map)return;notice(`Trocando ${account.name} para ${map}…`);const result=await window.vpNative.gameAction({id:account.id,action:'change-map',payload:{map}});state.mapPicker=false;notice(result.ok?`Mapa selecionado: ${result.map}`:(result.error||'Não foi possível trocar o mapa.'));return render();}
   const discovery=e.target.closest('[data-discovery]');
-  if(discovery){const account=state.live[state.selected];if(!account)return;const starting=discovery.dataset.discovery==='start';const result=await (starting?window.vpNative.startDiscovery(account.id):window.vpNative.stopDiscovery(account.id));if(result.ok){state.discovery[account.id]=starting?result.runId:null;await loadCollector();}else notice(result.error);return;}
+  if(discovery){const account=state.live[state.selected];if(!account)return;const starting=discovery.dataset.discovery==='start';const result=await (starting?window.vpNative.startDiscovery(account.id):window.vpNative.stopDiscovery(account.id));if(result.ok){state.discovery[account.id]=starting?result.runId:null;if(result.summary)notice(`Discovery #${result.runId}: ${result.summary.facts} fatos, ${result.summary.observations} ocorrências, ${result.summary.endpoints} endpoints, ${result.summary.websockets} WebSockets.`);await loadCollector();}else notice(result.error);return;}
   const login=e.target.closest('[data-profile-login]');
   if(login){const form=login.closest('[data-profile-form]');const saved=await saveProfileForm(form);if(!saved.ok)return;const i=state.live.findIndex(a=>a.id===login.dataset.profileLogin);if(i>=0&&!state.live[i].running)await openIndexes([i]);const result=await window.vpNative.loginProfile(login.dataset.profileLogin);notice(result.ok?'Login enviado para a conta.':result.error);return;}
   const remove=e.target.closest('[data-profile-delete]');
@@ -763,5 +768,5 @@ tickClock();
 render();
 refresh();
 setInterval(tickClock, 1000);
-setInterval(refresh, 3000);
+window.vpNative?.onStateChanged?.(({accountId,patch})=>{const index=state.live.findIndex(account=>account.id===accountId);if(index<0)return;state.live[index]={...state.live[index],...patch};const vm=accountVM(index),values={profile:vm.profile,map:vm.map,rule:vm.rule};for(const [field,value] of Object.entries(values))document.querySelectorAll(`[data-live-account="${accountId}"][data-live-field="${field}"]`).forEach(element=>element.textContent=value);document.querySelectorAll(`[data-live-account="${accountId}"][data-live-field="status"]`).forEach(element=>{element.lastChild.textContent=vm.statusLabel;element.style.color=vm.statusColor;});});
 window.addEventListener('resize',()=>setTimeout(syncEmbeddedViews,0));

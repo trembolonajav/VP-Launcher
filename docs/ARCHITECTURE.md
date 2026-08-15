@@ -16,7 +16,7 @@ A interface é carregada diretamente de `apps/desktop/ui/index.html` com `loadFi
 
 ## Game Agent
 
-`apps/desktop/game-agent/` é injetado somente nas páginas permitidas do PokeWG. Um `MutationObserver` atualiza o snapshot quando a interface muda e uma reconciliação completa ocorre a cada 20 segundos. O processo principal lê apenas o snapshot pronto, sem varrer `document.body.innerText` de dez contas a cada dois segundos.
+`apps/desktop/game-agent/` é injetado somente nas páginas permitidas do PokeWG. Readers processam apenas subárvores alteradas; uma reconciliação completa de segurança ocorre a cada 30 segundos. O Agent envia deltas parciais por um contrato versionado, limitado e sequenciado, com heartbeat de 15 segundos. Cada documento possui `instanceId`, permitindo reconexão segura após reload sem expor Node à página.
 
 ## Isolamento
 
@@ -29,6 +29,10 @@ Cada conta possui cookies, cache, IndexedDB e localStorage próprios. Credenciai
 SQLite é a fonte oficial para contas, perfis de rede, presets, sessões, eventos e configurações. `seed/default-accounts.json` serve somente como seed no primeiro boot. As partições existentes `persist:conta-XX` são preservadas.
 
 O Collector de rede usa exclusivamente `webContents.debugger` dentro do Electron. `Session.webRequest` não é usado: manter dois observadores para os mesmos requests duplicaria trabalho e não acrescentaria frames WebSocket. O CDP cataloga endpoints no modo normal; conteúdo redigido de frames e correlação contextual só são persistidos durante uma run explícita de Discovery.
+
+O `CollectorCoordinator` mantém o estado canônico por conta. O diagnóstico IPC informa health do Agent, Bridge, CDP, sessão e fila. Observações repetidas de Discovery são coalescidas por fingerprint, URLs voláteis são normalizadas e a fila possui limite e métricas de backpressure. O renderer recebe patches `vp:state-changed`; não existe polling global de três segundos.
+
+O fechamento do P2 foi validado em 15/08/2026 com uma sessão real de 30 minutos. O heartbeat chegou até 14,8 segundos antes do encerramento, o CDP permaneceu anexado, o SQLite terminou íntegro e o Discovery consolidou 7.993 observações em 15 fatos com fila máxima 50 e zero erros, pendências ou descartes.
 
 ## Vault
 
